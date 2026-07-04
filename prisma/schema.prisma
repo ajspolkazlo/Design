@@ -1,0 +1,87 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  // Relative to this file: the database lives at prisma/dev.db.
+  url      = "file:./dev.db"
+}
+
+model User {
+  id          String        @id @default(cuid())
+  name        String        @unique
+  emoji       String        @default("🙂")
+  createdAt   DateTime      @default(now())
+  memberships GroupMember[]
+  paidExpenses Expense[]    @relation("Payer")
+  splits      ExpenseSplit[]
+  paymentsSent     Payment[] @relation("PaymentFrom")
+  paymentsReceived Payment[] @relation("PaymentTo")
+}
+
+model Group {
+  id        String        @id @default(cuid())
+  name      String
+  currency  String        @default("EUR")
+  createdAt DateTime      @default(now())
+  members   GroupMember[]
+  expenses  Expense[]
+  payments  Payment[]
+}
+
+model GroupMember {
+  id      String @id @default(cuid())
+  groupId String
+  userId  String
+  group   Group  @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, userId])
+}
+
+model Expense {
+  id          String   @id @default(cuid())
+  groupId     String
+  payerId     String
+  description String
+  // All monetary values are integer minor units (cents) to avoid float drift.
+  amountCents Int
+  currency    String
+  // Manual rate to the group currency; amount * rate = value in group currency.
+  exchangeRate Float   @default(1)
+  date        DateTime
+  category    String   @default("general")
+  splitType   String // EQUAL | EXACT | PERCENT | SHARES
+  createdAt   DateTime @default(now())
+  group       Group    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  payer       User     @relation("Payer", fields: [payerId], references: [id])
+  splits      ExpenseSplit[]
+}
+
+model ExpenseSplit {
+  id          String  @id @default(cuid())
+  expenseId   String
+  userId      String
+  amountCents Int
+  // Raw split input (percent value or share count) so the form can be re-edited.
+  weight      Float?
+  expense     Expense @relation(fields: [expenseId], references: [id], onDelete: Cascade)
+  user        User    @relation(fields: [userId], references: [id])
+
+  @@unique([expenseId, userId])
+}
+
+model Payment {
+  id          String   @id @default(cuid())
+  groupId     String
+  fromId      String
+  toId        String
+  amountCents Int
+  currency    String
+  date        DateTime @default(now())
+  note        String?
+  group       Group    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  from        User     @relation("PaymentFrom", fields: [fromId], references: [id])
+  to          User     @relation("PaymentTo", fields: [toId], references: [id])
+}
