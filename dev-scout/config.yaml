@@ -147,17 +147,42 @@ scale_filter:
   # gdy liczby nie da się wyciągnąć z opisu, NIE odrzucamy (lepiej przepuścić niż zgubić leada)
 
 portal_check:
-  # Zweryfikowane na zywo (2026): tylko OLX jawnie zezwala w robots.txt na
-  # automatyczne zapytania do swojego wyszukiwania (Allow: /api/v1/offers/).
-  # Otodom blokuje na poziomie CDN/WAF, RynekPierwotny/Morizon/Domiporta maja
-  # jawny zakaz w robots.txt, Gratka nie ma udokumentowanego API. Reszta
-  # portali w src/portal_check.py zwraca wiec zawsze False (nieprzetestowane,
-  # NIE "potwierdzone czyste") — nie dodawaj ich tutaj, dopoki ktos nie
-  # zaimplementuje realnego sprawdzenia, bo inaczej scoring.brak_na_portalach
-  # bedzie nagradzal leady, ktorych w ogole nie sprawdzilismy.
+  # Portale sprawdzane backendem HTTP (dziś realnie tylko OLX — jego endpoint
+  # /api/v1/offers jest dozwolony w robots.txt i zweryfikowany na żywo).
   portale:
     - olx
-  recheck_after_days: 14  # co ile dni ponownie sprawdzac tego samego leada
+
+  # Portale sprawdzane backendem BROWSER (prawdziwy Chromium/Playwright) —
+  # dla tych, które blokują goły HTTP (Otodom) albo renderują wyniki JS-em.
+  # Uruchamiane TYLKO gdy enable_browser: true. Patrz src/portal_check.py po
+  # pełny opis granicy etycznej i sytuacji ToS/robots każdego z nich.
+  browser_portals:
+    - otodom
+    - rynekpierwotny
+    - morizon
+    - gratka
+    - domiporta
+
+  # DOMYŚLNIE WYŁĄCZONE. Włącz (true) NA MASZYNIE, z której uruchamiasz pipeline
+  # (najlepiej polskie IP domowe Adama) — wtedy backend browser realnie działa.
+  # W sandboxie CI/serwerowni i tak nie zadziała (proxy nie przepuszcza Chromium)
+  # i część portali blokuje IP z datacenter. Ustawiając true akceptujesz ryzyko
+  # ToS portali, których robots.txt zabrania automatycznego wyszukiwania
+  # (RynekPierwotny/Morizon/Domiporta — patrz komentarze w portal_check.py).
+  enable_browser: false
+  browser_headless: true
+
+  # Szablony URL wyszukiwania dla backendu browser. {query} = URL-encoded
+  # "ulica, miejscowosc". Do zweryfikowania przy pierwszym realnym uruchomieniu
+  # (formaty URL portali się zmieniają) — nadpisują domyślne z portal_check.py.
+  search_url_templates:
+    otodom: "https://www.otodom.pl/pl/wyniki/sprzedaz/dom/cala-polska?ownerTypeSingleSelect=ALL&by=LATEST&direction=DESC&search=%5Bfilter_search%5D={query}"
+    rynekpierwotny: "https://rynekpierwotny.pl/s/?phrase={query}"
+    morizon: "https://www.morizon.pl/do-kupienia/?ps%5Bquery%5D={query}"
+    gratka: "https://gratka.pl/nieruchomosci?keyword={query}"
+    domiporta: "https://www.domiporta.pl/nieruchomosci/sprzedam?Keywords={query}"
+
+  recheck_after_days: 14  # co ile dni ponownie sprawdzać tego samego leada
 
 scoring:
   # scoring 0-100 zamiast twardego filtra — sortujemy, nie odrzucamy agresywnie

@@ -3,3 +3,8 @@ pandas>=2.0
 PyYAML>=6.0
 geopy>=2.4
 tenacity>=8.2
+
+# Opcjonalne — tylko dla backendu browser w portal_check.py (Otodom itd.).
+# Po instalacji uruchom raz: playwright install chromium
+# Import jest leniwy, wiec bez tego pipeline dziala (backend browser sie pomija).
+playwright>=1.40

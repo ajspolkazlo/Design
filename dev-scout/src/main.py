@@ -109,7 +109,7 @@ def step_enrich(cfg: dict) -> None:
             query = ", ".join(p for p in [lead["ulica"], lead["miejscowosc"]] if p)
             if not query:
                 query = ", ".join(p for p in [lead["miejscowosc"], lead["gmina"]] if p)
-            presence = portal_check.check_portals(query, cfg["portal_check"]["portale"])
+            presence = portal_check.check_portals(query, cfg["portal_check"])
             on_portal_found = int(presence.is_present_anywhere)
             on_portal_json = json.dumps(presence.__dict__, ensure_ascii=False)
             on_portal_checked_at = presence.checked_at
@@ -129,6 +129,7 @@ def step_enrich(cfg: dict) -> None:
             on_portal_checked_at=on_portal_checked_at,
             distance_km=distance_km,
         )
+    portal_check.close_browser()  # zamknij Chromium jesli backend browser byl uzyty
     conn.close()
 
 
