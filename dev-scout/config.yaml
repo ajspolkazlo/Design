@@ -1,0 +1,138 @@
+# Konfiguracja Dev Scout — wykrywacz małych deweloperów w promieniu 20-30 km od Warszawy
+#
+# UWAGA: to jest punkt startowy. Dokładne nazwy gmin/powiatów i słowa kluczowe
+# trzeba zweryfikować po pierwszym realnym imporcie danych z RWDZ (patrz CLAUDE.md, krok 1).
+
+region:
+  wojewodztwo: "mazowieckie"
+  # Gminy w promieniu ok. 20-30 km od Warszawy (do doprecyzowania po pierwszym imporcie —
+  # w RWDZ gmina bywa zapisana jako "gmina Piaseczno", "m. Piaseczno", "Piaseczno" itp.)
+  gminy:
+    - Piaseczno
+    - Konstancin-Jeziorna
+    - Lesznowola
+    - Prazmow
+    - Gora Kalwaria
+    - Nadarzyn
+    - Raszyn
+    - Michalowice
+    - Brwinow
+    - Pruszkow
+    - Ozarow Mazowiecki
+    - Lomianki
+    - Izabelin
+    - Stare Babice
+    - Lomianki
+    - Legionowo
+    - Jablonna
+    - Nieporet
+    - Wolomin
+    - Marki
+    - Zabki
+    - Zielonka
+    - Kobylka
+    - Radzymin
+    - Jozefow
+    - Otwock
+    - Wiazowna
+    - Karczew
+    - Celestynow
+    - Grodzisk Mazowiecki
+    - Milanowek
+    - Podkowa Lesna
+
+  # gminy do wykluczenia mimo pasującej nazwy powiatu (np. sama Warszawa)
+  wyklucz:
+    - Warszawa
+
+building_types:
+  # słowa kluczowe wyszukiwane w kolumnie z kategorią/rodzajem obiektu (case-insensitive, bez ogonków)
+  #
+  # Zweryfikowane na realnym pliku wynik_mazowieckie.csv (680k wierszy): rzeczywiste
+  # opisy w kolumnie `nazwa_zam_budowlanego` są bardzo zmienne w formie ("trzy budynki
+  # mieszkalne jednorodzinne w zabudowie szeregowej", "budowa dwóch budynków ... w
+  # zabudowie bliźniaczej" itp.) — pełne frazy z poprzedniej wersji configu łapały
+  # tylko 129/8697 (szeregowa) i 229/14963 (bliźniacza) realnych trafień. Krótsze
+  # frazy poniżej łapią całość.
+  include_keywords:
+    - "w zabudowie szeregowej"
+    - "w zabudowie bliźniaczej"
+    - "wielorodzinn"       # łapie wielorodzinny/wielorodzinne/wielorodzinnych
+    - "zespol budynkow mieszkalnych jednorodzinnych"
+  # jeśli w rekordzie jest więcej niż 1 budynek / większa liczba lokali — silny sygnał "deweloper", nie "buduję dla siebie"
+  min_units_signal: 2
+
+investor_filter:
+  # odrzucamy zgłoszenia gdzie inwestor to wyraźnie osoba fizyczna (imię nazwisko, brak formy prawnej)
+  # i zostawiamy tylko wpisy, które wyglądają na firmę (patrz src/filters.py: looks_like_company)
+  company_signals:
+    - "sp. z o.o."
+    - "sp.k."
+    - "s.a."
+    - "spolka"
+    - "grupa"
+    - "invest"
+    - "development"
+    - "deweloper"
+    - "budownictwo"
+    - "nieruchomosci"
+
+known_large_developers:
+  # znani, duzi deweloperzy z pelnym budzetem marketingowym — odrzucamy od razu,
+  # zeby nie zasmiecac wynikow oczywistosciami
+  - "Dom Development"
+  - "Atal"
+  - "Murapol"
+  - "Ronson"
+  - "Robyg"
+  - "Echo Investment"
+  - "Archicom"
+  - "Nexity"
+  - "Bouygues Immobilier"
+  - "J.W. Construction"
+  - "Marvipol"
+  - "Unidevelopment"
+  - "Develia"
+  - "Victoria Dom"
+
+scale_filter:
+  min_budynkow: 2   # pojedynczy dom to raczej budowa dla siebie, nie deweloperka
+  max_budynkow: 40  # powyzej tego to raczej duzy gracz z wlasnym dzialem marketingu
+
+portal_check:
+  portale:
+    - otodom
+    - olx
+    - rynekpierwotny
+    - morizon
+    - gratka
+    - domiporta
+  recheck_after_days: 14  # co ile dni ponownie sprawdzac tego samego leada
+
+scoring:
+  # scoring 0-100 zamiast twardego filtra — sortujemy, nie odrzucamy agresywnie
+  weights:
+    brak_na_portalach: 40
+    mala_firma_bez_www: 20
+    swiezy_wpis: 15       # < 30 dni od daty zgloszenia/decyzji
+    mala_skala: 15        # 2-10 budynkow = bardziej "boutique"
+    bliska_odleglosc: 10  # blizej centrum Warszawy w ramach 20-30 km
+  # punkt odniesienia do liczenia odleglosci — Plac Defilad, centrum Warszawy
+  warszawa_centrum:
+    lat: 52.2297
+    lon: 21.0122
+  max_distance_km: 30
+
+paths:
+  raw_dir: "data/raw"
+  db_path: "data/dev_scout.sqlite3"
+  output_dir: "output"
+
+rwdz:
+  # plik per-województwo jest dużo mniejszy niż plik "cały kraj" — to nasze główne źródło
+  wojewodztwo_zip_url: "https://wyszukiwarka.gunb.gov.pl/pliki_pobranie/wynik_mazowieckie.zip"
+  # Zweryfikowane na realnym pliku: separator to ';' (nie '#'), plik ma BOM na
+  # początku, stąd 'utf-8-sig' zamiast 'utf-8' (żeby BOM nie trafił do nazwy
+  # pierwszej kolumny).
+  column_separator: ";"
+  encoding: "utf-8-sig"

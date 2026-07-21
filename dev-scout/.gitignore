@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+data/raw/*
+!data/raw/sample_test.csv
+data/*.sqlite3
+output/
