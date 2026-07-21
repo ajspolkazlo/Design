@@ -46,21 +46,62 @@ region:
     - Warszawa
 
 building_types:
-  # słowa kluczowe wyszukiwane w kolumnie z kategorią/rodzajem obiektu (case-insensitive, bez ogonków)
+  # słowa kluczowe wyszukiwane w kolumnie z opisem zamierzenia (nazwa_zam_budowlanego),
+  # case-insensitive, bez ogonków.
   #
   # Zweryfikowane na realnym pliku wynik_mazowieckie.csv (680k wierszy): rzeczywiste
-  # opisy w kolumnie `nazwa_zam_budowlanego` są bardzo zmienne w formie ("trzy budynki
-  # mieszkalne jednorodzinne w zabudowie szeregowej", "budowa dwóch budynków ... w
-  # zabudowie bliźniaczej" itp.) — pełne frazy z poprzedniej wersji configu łapały
-  # tylko 129/8697 (szeregowa) i 229/14963 (bliźniacza) realnych trafień. Krótsze
-  # frazy poniżej łapią całość.
+  # opisy są bardzo zmienne w formie ("trzy budynki mieszkalne jednorodzinne w zabudowie
+  # szeregowej", "budowa dwóch budynków ... w zabudowie bliźniaczej" itp.) — pełne frazy
+  # z pierwotnej wersji configu łapały tylko 129/8697 (szeregowa) i 229/14963 (bliźniacza)
+  # realnych trafień. Krótsze frazy poniżej łapią całość.
   include_keywords:
     - "w zabudowie szeregowej"
     - "w zabudowie bliźniaczej"
-    - "wielorodzinn"       # łapie wielorodzinny/wielorodzinne/wielorodzinnych
+    - "w zabudowie wolnostojącej"
+    - "jednorodzinnego wolnostojącego"
+    - "jednorodzinnych wolnostojących"
+    - "wolnostojący"          # łapie pojedyncze domy wolnostojące (na życzenie Adama)
+    - "wielorodzinn"          # łapie wielorodzinny/wielorodzinne/wielorodzinnych
     - "zespol budynkow mieszkalnych jednorodzinnych"
-  # jeśli w rekordzie jest więcej niż 1 budynek / większa liczba lokali — silny sygnał "deweloper", nie "buduję dla siebie"
-  min_units_signal: 2
+
+  # Słowa kluczowe WYKLUCZAJĄCE — jeśli opis je zawiera, rekord odpada, nawet gdy
+  # pasuje do include_keywords. Bez tego do wyników trafiały "kwiatki" typu:
+  #   "Budowa ośmiu instalacji gazowych ... czterech budynków ... w zabudowie szeregowej"
+  #   "budowa sieci wodociągowej i kanalizacji sanitarnej dla trzech budynków ... wielorodzinnych"
+  # czyli pozwolenia na INSTALACJE i SIECI przy budynkach, a nie na same budynki.
+  # (zweryfikowane na żywo — te trzy pierwsze wpisy usuwają ~10.5k śmieci z 41k trafień)
+  exclude_keywords:
+    - "instalacj"        # instalacje gazowe / elektryczne / wod-kan wewnętrzne
+    - "sieci"            # sieci wodociągowe / kanalizacyjne / gazowe / elektroenergetyczne
+    - "siec "
+    - "kanalizacj"
+    - "wodociag"
+    - "przylacz"         # przyłącza
+    - "zjazd"            # zjazd z drogi
+    - "ogrodzenie"
+    - "wiata"
+    - "maszt"
+    - "stacja"           # stacja transformatorowa / bazowa
+    - "parking"
+    - "oczyszczalni"     # przydomowa oczyszczalnia jako główny przedmiot
+    - "zbiornik"         # zbiornik / szambo jako główny przedmiot
+    - "studni"
+    - "slup"
+    - "napowietrzn"      # linia napowietrzna
+    - "telekomunik"
+
+  # Wymagaj, żeby "rodzaj zamierzenia" (kolumna nazwa_zamierzenia_bud) był budową
+  # NOWEGO obiektu — odcina rozbiórki, rozbudowy, nadbudowy, odbudowy i "wykonanie
+  # robót budowlanych innych" (to ostatnie łapało większość instalacji). Realny
+  # rejestr ma dokładnie wartość "budowa nowego/nowych obiektów budowlanych".
+  require_new_construction: true
+  new_construction_hint: "budowa nowego"
+
+# Filtr daty — bierzemy tylko wnioski złożone od tej daty (kolumna data_wplywu_wniosku).
+# Na życzenie Adama zawężone do wniosków od 2024 — starsze zgłoszenia to nieaktualne
+# leady (inwestycja dawno sprzedana albo porzucona).
+date_filter:
+  min_data: "2024-01-01"
 
 investor_filter:
   # odrzucamy zgłoszenia gdzie inwestor to wyraźnie osoba fizyczna (imię nazwisko, brak formy prawnej)
@@ -96,8 +137,14 @@ known_large_developers:
   - "Victoria Dom"
 
 scale_filter:
-  min_budynkow: 2   # pojedynczy dom to raczej budowa dla siebie, nie deweloperka
-  max_budynkow: 40  # powyzej tego to raczej duzy gracz z wlasnym dzialem marketingu
+  # Liczba budynków jest teraz WYCIĄGANA z tekstu opisu (filters.extract_building_count):
+  # z liczebników ("dwóch/trzech/czterech budynków") i cyfr ("budowa 4 budynków ...").
+  # Realny eksport RWDZ nie ma osobnej kolumny z liczbą budynków, więc to jedyne źródło.
+  min_budynkow: 1   # UWAGA: 1 = wpuszczamy pojedyncze domy wolnostojące (na życzenie Adama).
+                    #        Ustaw 2, żeby odciąć domy "buduję dla siebie" i zostawić tylko
+                    #        realne inwestycje wielobudynkowe.
+  max_budynkow: 40  # powyżej tego to raczej duży gracz z własnym działem marketingu — odcinamy
+  # gdy liczby nie da się wyciągnąć z opisu, NIE odrzucamy (lepiej przepuścić niż zgubić leada)
 
 portal_check:
   # Zweryfikowane na zywo (2026): tylko OLX jawnie zezwala w robots.txt na

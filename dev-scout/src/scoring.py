@@ -47,7 +47,10 @@ def compute_score(lead: dict, cfg: dict) -> int:
 
     liczba_budynkow = lead.get("liczba_budynkow")
     try:
-        liczba_budynkow = int(liczba_budynkow) if liczba_budynkow is not None else None
+        # int(float(...)): w bazie liczba budynkow jest tekstem typu "2.0"
+        # (kolumna TEXT + pandas float), a int("2.0") rzuca ValueError — bez
+        # tego bonus mala_skala nigdy by sie nie naliczyl
+        liczba_budynkow = int(float(liczba_budynkow)) if liczba_budynkow is not None else None
     except (ValueError, TypeError):
         liczba_budynkow = None
     if liczba_budynkow is not None and 2 <= liczba_budynkow <= 10:

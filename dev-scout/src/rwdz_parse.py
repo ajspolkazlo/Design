@@ -39,6 +39,10 @@ COLUMN_HINTS: dict[str, list[str]] = {
     "id_sprawy": ["numer gunb", "numer urzad", "identyfikator", "nr sprawy", "numer sprawy", "sygnatura"],
     "data": ["data wplywu", "data zlozenia", "data wydania", "data"],
     "rodzaj_dokumentu": ["rodzaj dokumentu", "typ dokumentu", "kategoria dokumentu"],
+    # rodzaj zamierzenia (intencja): "budowa nowego/nowych obiektow budowlanych" vs
+    # rozbiorka/rozbudowa/nadbudowa/"wykonanie robot budowlanych innych" — uzywane
+    # przez filters.py do odciecia wszystkiego co nie jest budowa nowego budynku
+    "rodzaj_zamierzenia": ["zamierzenia bud", "rodzaj zamierzenia"],
     "kategoria_obiektu": ["zam budowlanego", "kategoria obiektu", "rodzaj obiektu", "nazwa obiektu", "opis obiektu"],
     "wojewodztwo": ["wojewodztwo"],
     "powiat": ["powiat"],
