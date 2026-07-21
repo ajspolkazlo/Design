@@ -100,13 +100,16 @@ scale_filter:
   max_budynkow: 40  # powyzej tego to raczej duzy gracz z wlasnym dzialem marketingu
 
 portal_check:
+  # Zweryfikowane na zywo (2026): tylko OLX jawnie zezwala w robots.txt na
+  # automatyczne zapytania do swojego wyszukiwania (Allow: /api/v1/offers/).
+  # Otodom blokuje na poziomie CDN/WAF, RynekPierwotny/Morizon/Domiporta maja
+  # jawny zakaz w robots.txt, Gratka nie ma udokumentowanego API. Reszta
+  # portali w src/portal_check.py zwraca wiec zawsze False (nieprzetestowane,
+  # NIE "potwierdzone czyste") — nie dodawaj ich tutaj, dopoki ktos nie
+  # zaimplementuje realnego sprawdzenia, bo inaczej scoring.brak_na_portalach
+  # bedzie nagradzal leady, ktorych w ogole nie sprawdzilismy.
   portale:
-    - otodom
     - olx
-    - rynekpierwotny
-    - morizon
-    - gratka
-    - domiporta
   recheck_after_days: 14  # co ile dni ponownie sprawdzac tego samego leada
 
 scoring:

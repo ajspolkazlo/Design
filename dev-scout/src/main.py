@@ -70,6 +70,7 @@ def step_store(cfg: dict, filtered_df: pd.DataFrame) -> int:
             "data": r.get("norm_data"),
             "gmina": r.get("norm_gmina"),
             "miejscowosc": r.get("norm_miejscowosc"),
+            "ulica": r.get("norm_ulica"),
             "kategoria_obiektu": r.get("norm_kategoria_obiektu"),
             "inwestor": r.get("norm_inwestor"),
             "liczba_budynkow": r.get("norm_liczba_budynkow"),
@@ -103,7 +104,11 @@ def step_enrich(cfg: dict) -> None:
 
         on_portal_found, on_portal_json, on_portal_checked_at = None, None, None
         try:
-            query = ", ".join(p for p in [lead["miejscowosc"], lead["gmina"]] if p)
+            # ulica + miejscowosc to najsilniejszy sygnal (patrz portal_check.py) —
+            # gmina jako fallback tylko gdy nie mamy ulicy w danych
+            query = ", ".join(p for p in [lead["ulica"], lead["miejscowosc"]] if p)
+            if not query:
+                query = ", ".join(p for p in [lead["miejscowosc"], lead["gmina"]] if p)
             presence = portal_check.check_portals(query, cfg["portal_check"]["portale"])
             on_portal_found = int(presence.is_present_anywhere)
             on_portal_json = json.dumps(presence.__dict__, ensure_ascii=False)

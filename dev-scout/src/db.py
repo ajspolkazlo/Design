@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS leads (
     data TEXT,
     gmina TEXT,
     miejscowosc TEXT,
+    ulica TEXT,
     kategoria_obiektu TEXT,
     inwestor TEXT,
     liczba_budynkow TEXT,
@@ -54,14 +55,15 @@ def upsert_leads(conn: sqlite3.Connection, rows: list[dict]) -> int:
         if cur.fetchone():
             continue
         cur.execute(
-            """INSERT INTO leads (id_sprawy, data, gmina, miejscowosc, kategoria_obiektu,
+            """INSERT INTO leads (id_sprawy, data, gmina, miejscowosc, ulica, kategoria_obiektu,
                                    inwestor, liczba_budynkow, is_likely_company, raw_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 row["id_sprawy"],
                 row.get("data"),
                 row.get("gmina"),
                 row.get("miejscowosc"),
+                row.get("ulica"),
                 row.get("kategoria_obiektu"),
                 row.get("inwestor"),
                 row.get("liczba_budynkow"),
