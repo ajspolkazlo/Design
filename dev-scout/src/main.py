@@ -96,7 +96,7 @@ def step_enrich(cfg: dict) -> None:
             info_json = json.dumps({"found": False, "error": "lookup_failed"})
 
         try:
-            coords = geocode.geocode_address(lead["miejscowosc"] or "", lead["gmina"] or "")
+            coords = geocode.geocode_address(lead["miejscowosc"] or "", lead["gmina"] or "", lead["ulica"] or None)
             lat, lon = coords if coords else (None, None)
         except Exception:
             log.exception("Nie udalo sie zgeokodowac %s", lead["id_sprawy"])
