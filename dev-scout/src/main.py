@@ -140,9 +140,13 @@ def step_score(cfg: dict) -> None:
         lead = row.to_dict()
         try:
             company_info = json.loads(lead.get("krs_ceidg_json") or "{}")
-            lead["company_has_website"] = bool(company_info.get("website"))
+            # Odrozniamy "sprawdzone, brak strony" od "nie sprawdzone" (np. brak
+            # tokenu CEIDG, albo spolka w KRS ktorego dzis nie sprawdzamy) —
+            # bez tego kazdy niesprawdzony inwestor dostawalby bonus
+            # mala_firma_bez_www, mimo ze w ogole nie wiemy, czy ma strone.
+            lead["company_has_website"] = bool(company_info.get("website")) if company_info.get("found") else None
         except (json.JSONDecodeError, TypeError):
-            lead["company_has_website"] = False
+            lead["company_has_website"] = None
         lead["on_portal_found"] = bool(lead.get("on_portal_found"))
         score = scoring.compute_score(lead, cfg)
         db.update_status(conn, lead["id_sprawy"], status="scored", score=score)

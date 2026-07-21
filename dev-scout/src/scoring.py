@@ -37,7 +37,9 @@ def compute_score(lead: dict, cfg: dict) -> int:
     if not lead.get("on_portal_found"):
         score += weights.get("brak_na_portalach", 0)
 
-    if lead.get("is_likely_company") and not lead.get("company_has_website"):
+    # company_has_website is None gdy nie sprawdzilismy (brak tokenu CEIDG /
+    # spolka w KRS) — nagradzamy tylko potwierdzony brak strony, nie "nie wiem"
+    if lead.get("is_likely_company") and lead.get("company_has_website") is False:
         score += weights.get("mala_firma_bez_www", 0)
 
     if is_recent(lead.get("data")):
