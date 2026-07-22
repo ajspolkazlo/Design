@@ -17,13 +17,36 @@ sygnalami OBIEKTYWNYMI ponizej.
 1. GEOMETRIA: dokladne wspolrzedne ogloszenia (Otodom osadza je w JSON strony,
    OLX podaje zgrubne w API) vs poligon dzialki ewidencyjnej z ULDK.
    Pin w dzialce / <=150 m => silne potwierdzenie; > 2 km => odrzucenie.
-2. PARAMETRY STRUKTURALNE OGLOSZENIA (Otodom __NEXT_DATA__, OLX params z API):
-   - market: primary/secondary — rynek WTORNY nie moze byc nowa inwestycja z wniosku
-   - data utworzenia ogloszenia vs data wplywu wniosku — ogloszenie duzo starsze
-     od wniosku dotyczy innej (wczesniejszej) nieruchomosci
-   - metraz domu vs widelki z kubatury RWDZ (kubatura / 5.5 ... / 4.0 —
-     dzielnik skalibrowany na realnych parach kubatura<->oferta z probki)
-   - powierzchnia dzialki w ogloszeniu vs urzedowa z ewidencji gruntow
+2. PARAMETRY STRUKTURALNE OGLOSZENIA — TEN SAM zestaw sygnalow (market,
+   data utworzenia, metraz, dzialka, wspolrzedne) wyciagany z KAZDEGO z 6
+   portali, z najlepszego dostepnego zrodla per portal (zweryfikowane na
+   zywo, 22.07.2026):
+   - Otodom: __NEXT_DATA__ (JSON strony, Next.js) — pelny zestaw + wspolrzedne.
+   - OLX: pola `params`/`map` z API /api/v1/offers.
+   - Domiporta: JSON-LD schema.org RealEstateListing (datePosted, cena,
+     itemOffered.floorSize, itemOffered.geo) — pelny zestaw + wspolrzedne.
+   - RynekPierwotny: JSON-LD ApartmentComplex — adres i wspolrzedne CALEJ
+     INWESTYCJI (portal grupuje oferty per inwestycja, nie per dom — to
+     wlasciwy poziom szczegolowosci dla dopasowania do wniosku RWDZ).
+     market="primary" na sztywno (caly portal to wylacznie rynek pierwotny).
+   - Gratka/Morizon: brak wlasnego JSON-a dla pojedynczej oferty (ich
+     JSON-LD/Nuxt payload na stronie oferty niesie dane "podobnych ofert",
+     NIE oferty ktora sie ogladamy — pulapka zweryfikowana na zywo, nie
+     dac sie na nia zlapac). Zamiast tego: uniwersalny meta-opis SEO
+     (<meta property="og:description">) w formacie "NNN m² (pow. działki
+     NNN m²)" — zweryfikowany na zywo jako IDENTYCZNY tekst dla tej samej
+     nieruchomosci na obu portalach (wspolny wlasciciel, Grupa Domodi).
+     Brak wspolrzednych z tego zrodla — geometria dla tych dwoch portali
+     nadal opiera sie na ogolnym regexie jako ostatniej desce ratunku.
+   Wszystkie znaczniki: market: primary/secondary — rynek WTORNY nie moze byc
+   nowa inwestycja z wniosku; data utworzenia vs data wplywu wniosku;
+   metraz vs widelki z kubatury RWDZ (kubatura / 5.5 ... / 4.0); dzialka z
+   ogloszenia vs urzedowa z ewidencji gruntow.
+   WAZNE (zweryfikowane na zywo): oferta pod zapamietanym URL-em moze
+   WYGASNAC i portal CICHO PRZEKIEROWUJE na strone kategorii — bez
+   sprawdzenia, ze finalny URL nadal jest konkretnym ogloszeniem (patrz
+   fetch_html_facts/fetch_otodom_facts), wyciagnelibysmy dane zupelnie innej,
+   przypadkowej oferty i podpisali je pod naszym leadem.
 3. EWIDENCJA GRUNTOW (KIEG WMS, GUGiK — publiczna usluga panstwowa):
    - urzedowa powierzchnia dzialki (dokladniejsza niz nasz wlasny centroid/Shoelace)
    - GRUPA REJESTROWA wlasciciela: 7 = osoba fizyczna, 15 = spolka prawa
@@ -47,6 +70,7 @@ Progi w config.yaml -> verify (patrz DEFAULTS nizej).
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 import re
@@ -255,8 +279,10 @@ def parcel_official(parcel_id: str) -> dict:
 @dataclass
 class ListingFacts:
     """Znormalizowane fakty z ogloszenia — z JSON-a strony (Otodom), parametrow
-    API (OLX) albo regexow na HTML (Gratka/Morizon — nizsza pewnosc)."""
-    source: str = ""                   # "otodom_json" / "olx_api" / "html_regex"
+    API (OLX), JSON-LD schema.org (Domiporta/RynekPierwotny), uniwersalnego
+    meta-opisu SEO (Gratka/Morizon) albo regexow na HTML (ostatnia deska
+    ratunku, gdy nic z powyzszego nie zadziala — nizsza pewnosc)."""
+    source: str = ""                   # np. "otodom_json" / "domiporta_ldjson" / "gratka_meta_description" / "html_regex"
     market: str | None = None          # "primary" / "secondary"
     created_at: str | None = None      # ISO data utworzenia ogloszenia
     area_m2: float | None = None       # pow. uzytkowa domu/lokalu
@@ -273,9 +299,14 @@ def fetch_otodom_facts(url: str, timeout: int = 20) -> ListingFacts | None:
     zywo: market, createdAt, Area, Terrain_area, Build_year, wspolrzedne.
     Tag <script> ma dodatkowe atrybuty (crossorigin) — regex musi byc luzny."""
     try:
-        body = requests.get(url, headers={"User-Agent": _UA, "Accept-Language": "pl-PL"}, timeout=timeout).text
+        resp = requests.get(url, headers={"User-Agent": _UA, "Accept-Language": "pl-PL"}, timeout=timeout)
     except requests.RequestException:
         return None
+    from src import portal_check  # import tutaj — unika cyklu importu na poziomie modulu
+    if not portal_check._is_individual_listing("otodom", resp.url):
+        log.info("Ogloszenie %s przekierowalo poza konkretna oferte (%s) — prawdopodobnie wygaslo, pomijam", url, resp.url)
+        return None
+    body = resp.text
     m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', body, re.S)
     if not m:
         return None
@@ -349,34 +380,180 @@ _HTML_TERRAIN_RE = re.compile(
     r'(?:powierzchnia\s+dzia[łl]ki|dzia[łl]ka)[^0-9]{0,25}(\d{2,5}(?:[.,]\d{1,2})?)\s*(?:m|²|ar)',
     re.I)
 
+# "296 m² (pow. działki 1 224 m²) za 1 599 000 zł" — format meta description
+# (og:description / <meta name="description">) uzywany PRZEZ WIELE portali dla
+# SEO. To zdanie opisuje strone, na ktorej sie znajdujemy (nie inne oferty w
+# okolicy jak komponenty "podobne oferty" w reszcie strony) — zweryfikowane na
+# zywo na Gratka i Morizon: IDENTYCZNY tekst (ten sam adres, ten sam numer
+# oferty w nawiasie) dla tej samej nieruchomosci wystawionej na obu portalach
+# (wspolny wlasciciel/system — Grupa Domodi). Liczby moga byc rozdzielone
+# zwykla spacja albo NBSP (\xa0) — [\d\s]. wystarcza (\s w Pythonie obejmuje NBSP).
+_META_AREA_PLOT_RE = re.compile(
+    r'(\d[\d\s]{0,6})\s*m²\s*\(pow\.\s*działki\s*(\d[\d\s]{0,7})\s*m²\)', re.I)
 
-def fetch_html_facts(url: str, timeout: int = 20) -> ListingFacts | None:
-    """Fallback dla portali bez znanego JSON-a (Gratka/Morizon/Domiporta/
-    RynekPierwotny): regexy na HTML. Zakresy ograniczone (dom 10-9999 m2,
-    dzialka do 99999 m2), zeby nie lapac cen/identyfikatorow jako metrazu —
-    wczesniejsza, luzniejsza wersja regexow lapala smieci typu "dom 10593 m2"."""
+
+def _meta_content(body: str, key: str) -> str | None:
+    """Wartosc <meta name=".."/property=".." content="..">, niezaleznie od
+    KOLEJNOSCI atrybutow w znaczniku (zweryfikowane na zywo: Morizon i Gratka
+    ukladaja je inaczej — raz property przed content, raz po)."""
+    for tag_match in re.finditer(r"<meta\b[^>]*>", body):
+        tag = tag_match.group(0)
+        if f'"{key}"' not in tag:
+            continue
+        m = re.search(r'content="([^"]*)"', tag)
+        if m:
+            return html.unescape(m.group(1))
+    return None
+
+
+def _facts_from_meta_description(body: str) -> ListingFacts | None:
+    """Uniwersalny fallback (dziala TAM, gdzie portal uzywa standardowego
+    formatu SEO-opisu) — nie jest specyficzny dla jednego portalu, wiec
+    proboway go dla kazdego, u ktorego nie mamy dedykowanego parsera JSON-LD."""
+    desc = _meta_content(body, "og:description") or _meta_content(body, "description")
+    if not desc:
+        return None
+    m = _META_AREA_PLOT_RE.search(desc)
+    if not m:
+        return None
+    area = float(re.sub(r"\s", "", m.group(1)))
+    terrain = float(re.sub(r"\s", "", m.group(2)))
+    return ListingFacts(source="meta_description", area_m2=area, terrain_m2=terrain)
+
+
+def _parse_ld_json_blocks(body: str) -> list[dict]:
+    """Wszystkie poprawne bloki <script type="application/ld+json"> na stronie."""
+    blocks = []
+    for m in re.finditer(r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>', body, re.S):
+        try:
+            blocks.append(json.loads(m.group(1)))
+        except (json.JSONDecodeError, TypeError):
+            continue
+    return blocks
+
+
+def _urls_match(a: str | None, b: str) -> bool:
+    return bool(a) and a.rstrip("/") == b.rstrip("/")
+
+
+def _facts_from_domiporta(body: str, expected_url: str) -> ListingFacts | None:
+    """Domiporta osadza pelny schema.org RealEstateListing (JSON-LD) —
+    datePosted, cena, itemOffered.floorSize, itemOffered.geo — zweryfikowane
+    na zywo na realnej ofercie. WAZNE: sprawdzamy, ze blok.url zgadza sie z
+    zadanym URL-em, zanim zaufamy danym — ten sam wzorzec bloku bywa uzywany
+    tez na stronach kategorii z innym url."""
+    for d in _parse_ld_json_blocks(body):
+        if d.get("@type") != "RealEstateListing" or not _urls_match(d.get("url"), expected_url):
+            continue
+        item = d.get("itemOffered") or {}
+        geo = item.get("geo") or {}
+        floor = item.get("floorSize") or {}
+        lat, lon = geo.get("latitude"), geo.get("longitude")
+        return ListingFacts(
+            source="domiporta_ldjson",
+            created_at=d.get("datePosted"),
+            area_m2=floor.get("value"),
+            build_year=item.get("yearBuilt"),
+            lat=lat, lon=lon,
+            coords_precise=lat is not None,
+        )
+    return None
+
+
+def _facts_from_rynekpierwotny(body: str, expected_url: str) -> ListingFacts | None:
+    """RynekPierwotny grupuje oferty PER INWESTYCJA (nie per pojedynczy dom) —
+    zweryfikowane na zywo: JSON-LD ApartmentComplex daje precyzyjne
+    wspolrzedne i adres calej inwestycji, co jest wlasciwym poziomem
+    szczegolowosci dla dopasowania do wniosku RWDZ (jeden wniosek = jedna
+    inwestycja). market='primary' na sztywno — caly portal to WYLACZNIE
+    rynek pierwotny, to fakt o portalu, nie zgadywanie o konkretnej ofercie.
+    Blok nie ma pelnego URL (tylko sciezke wzgledna), wiec dopasowanie po
+    sciezce, nie identycznosci calego stringa."""
     try:
-        body = requests.get(url, headers={"User-Agent": _UA, "Accept-Language": "pl-PL"}, timeout=timeout).text
+        expected_path = re.sub(r"^https?://[^/]+", "", expected_url).rstrip("/")
+    except Exception:
+        expected_path = expected_url
+    for d in _parse_ld_json_blocks(body):
+        if d.get("@type") != "ApartmentComplex":
+            continue
+        rel_url = (d.get("url") or "").rstrip("/")
+        if rel_url and rel_url != expected_path:
+            continue
+        geo = d.get("geo") or {}
+        lat, lon = geo.get("latitude"), geo.get("longitude")
+        return ListingFacts(
+            source="rynekpierwotny_ldjson", market="primary",
+            lat=lat, lon=lon, coords_precise=lat is not None,
+        )
+    return None
+
+
+# Dysponenci strukturalni per portal (poza Otodom/OLX, ktore maja wlasne
+# dedykowane funkcje wyzej) — zweryfikowani na zywo na realnych ofertach.
+_STRUCTURED_EXTRACTORS = {
+    "domiporta": _facts_from_domiporta,
+    "rynekpierwotny": _facts_from_rynekpierwotny,
+}
+
+
+def fetch_html_facts(portal: str, url: str, timeout: int = 20) -> ListingFacts | None:
+    """Fakty dla portali bez dedykowanej funkcji jak fetch_otodom_facts/
+    olx_facts_from_offer. Kolejnosc prob: (1) strukturalny JSON-LD gdy portal
+    go ma i zgadza sie z URL-em (Domiporta/RynekPierwotny), (2) uniwersalny
+    meta-opis SEO (dziala dla Gratka/Morizon — ten sam string na obu, patrz
+    _META_AREA_PLOT_RE), (3) regexy na calym HTML jako ostatnia deska ratunku.
+
+    WAZNE, zweryfikowane na zywo (22.07.2026): dwa z trzech testowych URL-i z
+    wczesniejszej sesji (Gratka, Morizon) okazaly sie NIEAKTUALNE i po prostu
+    PRZEKIEROWALY na strone kategorii (oferta wygasla/usunieta) — bez
+    sprawdzenia response.url wzgledem wzorca "to jest konkretne ogloszenie"
+    wyciagnelibysmy dane INNEJ, przypadkowej oferty z tej kategorii i
+    podpisali je pod naszym leadem. To gorsze niz brak danych."""
+    try:
+        resp = requests.get(url, headers={"User-Agent": _UA, "Accept-Language": "pl-PL"}, timeout=timeout)
     except requests.RequestException:
         return None
-    facts = ListingFacts(source="html_regex")
-    m = _HTML_AREA_RE.search(body)
-    if m:
-        v = float(m.group(1).replace(",", "."))
-        if 10 <= v <= 9999:
-            facts.area_m2 = v
-    m = _HTML_TERRAIN_RE.search(body)
-    if m:
-        v = float(m.group(1).replace(",", "."))
-        if 50 <= v <= 99999:
-            facts.terrain_m2 = v
-    mlat = re.search(r'"lat(?:itude)?"\s*:\s*(-?\d{1,2}\.\d{3,})', body)
-    mlon = re.search(r'"l(?:on|ng)(?:gitude)?"\s*:\s*(-?\d{1,2}\.\d{3,})', body)
-    if mlat and mlon:
-        facts.lat, facts.lon = float(mlat.group(1)), float(mlon.group(1))
-        facts.coords_precise = True
-    if facts.area_m2 is None and facts.terrain_m2 is None and facts.lat is None:
+    from src import portal_check  # import tutaj, nie na gorze modulu — unika cyklu importu
+    if not portal_check._is_individual_listing(portal, resp.url):
+        log.info("Ogloszenie %s przekierowalo poza konkretna oferte (%s) — prawdopodobnie wygaslo, pomijam", url, resp.url)
         return None
+    body = resp.text
+
+    extractor = _STRUCTURED_EXTRACTORS.get(portal)
+    facts = extractor(body, resp.url) if extractor else None
+
+    meta_facts = _facts_from_meta_description(body)
+    if meta_facts:
+        if facts is None:
+            facts = meta_facts
+            facts.source = f"{portal}_meta_description"
+        else:
+            # dopelnij strukturalne dane o metraz/dzialke, jesli ich brakowalo
+            if facts.area_m2 is None:
+                facts.area_m2 = meta_facts.area_m2
+            if facts.terrain_m2 is None:
+                facts.terrain_m2 = meta_facts.terrain_m2
+
+    if facts is None:
+        facts = ListingFacts(source="html_regex")
+        m = _HTML_AREA_RE.search(body)
+        if m:
+            v = float(m.group(1).replace(",", "."))
+            if 10 <= v <= 9999:
+                facts.area_m2 = v
+        m = _HTML_TERRAIN_RE.search(body)
+        if m:
+            v = float(m.group(1).replace(",", "."))
+            if 50 <= v <= 99999:
+                facts.terrain_m2 = v
+        mlat = re.search(r'"lat(?:itude)?"\s*:\s*(-?\d{1,2}\.\d{3,})', body)
+        mlon = re.search(r'"l(?:on|ng)(?:gitude)?"\s*:\s*(-?\d{1,2}\.\d{3,})', body)
+        if mlat and mlon:
+            facts.lat, facts.lon = float(mlat.group(1)), float(mlon.group(1))
+            facts.coords_precise = True
+        if facts.area_m2 is None and facts.terrain_m2 is None and facts.lat is None:
+            return None
+
     return facts
 
 

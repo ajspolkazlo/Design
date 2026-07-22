@@ -1,10 +1,64 @@
 # Audyt Dev Scout — co zmienić, żeby mieć najświeższe i najtrafniejsze leady
 
-Stan na 22 lipca 2026, po dwóch rundach pracy: (1) wdrożenie wielosygnałowej
+Stan na 22 lipca 2026, po trzech rundach pracy: (1) wdrożenie wielosygnałowej
 weryfikacji dopasowań (`src/verify.py`) + raportu Excel (`tools/report_xlsx.py`),
 (2) domknięcie większości znalezisk z pierwszej rundy audytu — scoring, recheck,
-cache, adres pełny, testy, poprawki Excela. Punkty ułożone od największego
-wpływu. "✅ zrobione" = już w kodzie na tym branchu, reszta = rekomendacje.
+cache, adres pełny, testy, poprawki Excela, (3) usunięcie zakładki Dashboard
+(źle się renderowała) i rozszerzenie ekstrakcji danych strukturalnych z Otodom/
+OLX na pozostałe 4 portale. Punkty ułożone od największego wpływu.
+"✅ zrobione" = już w kodzie na tym branchu, reszta = rekomendacje.
+
+---
+
+## 0. Ekstrakcja danych strukturalnych — teraz na WSZYSTKICH 6 portalach
+
+✅ Wcześniej tylko Otodom (`__NEXT_DATA__`) i OLX (API) dawały dane
+strukturalne (metraż, działka, rynek, współrzędne) do weryfikacji — pozostałe
+4 portale miały tylko luźny regex na całym HTML. Zbadane na żywo (22.07.2026)
+i wdrożone:
+- **Domiporta**: pełny `schema.org RealEstateListing` (JSON-LD) — data
+  wystawienia, cena, `itemOffered.floorSize`, precyzyjne współrzędne
+  (`itemOffered.geo`). Najbogatsze źródło z czterech nowych.
+- **RynekPierwotny**: `schema.org ApartmentComplex` (JSON-LD) — adres i
+  precyzyjne współrzędne CAŁEJ INWESTYCJI (nie pojedynczego domu — portal z
+  natury grupuje oferty per inwestycja, co akurat idealnie pasuje do tego, jak
+  RWDZ też grupuje wnioski per inwestycja). `market="primary"` ustawiane na
+  sztywno — to fakt o całym portalu (wyłącznie rynek pierwotny), nie zgadywanie.
+- **Gratka / Morizon**: brak własnego JSON-a dla POJEDYNCZEJ oferty — ich
+  JSON-LD/Nuxt payload na stronie oferty niesie dane "podobnych ofert"
+  wyświetlanych obok, NIE oferty którą się ogląda (pułapka złapana na żywo:
+  pierwsze podejście wyciągnęłoby dane zupełnie INNEJ nieruchomości). Zamiast
+  tego: uniwersalny meta-opis SEO (`<meta property="og:description">`) w
+  formacie „NNN m² (pow. działki NNN m²)" — zweryfikowany jako identyczny
+  tekst dla tej samej nieruchomości wystawionej na obu portalach (wspólny
+  właściciel, Grupa Domodi). Bez współrzędnych z tego źródła.
+
+**Bonusowe znalezisko przy testowaniu (realny bug, nie hipotetyczny):** oferty
+pod zapamiętanymi URL-ami potrafią WYGASNĄĆ, a portal wtedy CICHO
+PRZEKIEROWUJE na stronę kategorii zamiast zwrócić 404. Złapane na żywo 2×
+(Gratka i Morizon) na URL-ach z wcześniejszej sesji — bez zabezpieczenia
+wyciągnęlibyśmy dane zupełnie przypadkowej, INNEJ oferty z tej kategorii i
+podpisali je pod naszym leadem. Naprawione: `fetch_html_facts`/
+`fetch_otodom_facts` sprawdzają teraz, że finalny URL (po ew. przekierowaniu)
+nadal wygląda jak konkretne ogłoszenie, zanim zaufają jakimkolwiek danym.
+Złapane też żywo podczas właściwego testu na 20 leadach (Domiporta
+przekierowała `/nieruchomosci/sprzedam-dom-.../151582529` na
+`/nieruchomosci/sprzedam` — zabezpieczenie zadziałało poprawnie).
+
+Pokryte testami (`tests/test_verify.py`): parsowanie meta-opisu (w tym wariant
+z NBSP jako separatorem tysięcy), wymóg zgodności URL-a dla Domiporta/
+RynekPierwotny.
+
+---
+
+## 0b. Arkusz Dashboard — usunięty (źle się renderował)
+
+❌→✅ Usunięty na wyraźne życzenie — wykresy/KPI wyglądały fatalnie w
+renderowaniu Excela mimo wcześniejszej naprawy buga z `visible_cells_only`.
+Raport ma teraz dwie zakładki: Leady (dane) i Legenda (metodologia). Jeśli
+w przyszłości wrócimy do pomysłu wizualizacji, warto rozważyć osobny plik/
+narzędzie zamiast wykresów natywnych Excela — one najwyraźniej nie renderują
+się dobrze w używanym przez Adama czytniku plików.
 
 ---
 
@@ -35,8 +89,9 @@ CONFIRMED/LIKELY/REVIEW/REJECTED + powody w `verify_json` i w kolumnie
   (`tests/test_verify.py::test_judge_match_dubious_distance_zone_not_silently_dropped`).
 
 **Wciąż otwarte ograniczenia (nie do rozwiązania bez dalszej pracy):**
-- Gratka/Morizon/Domiporta/RynekPierwotny bez odkrytego JSON-a — regexy na
-  HTML, niższa pewność niż Otodom/OLX.
+- Gratka/Morizon nadal bez współrzędnych (patrz punkt 0) — meta-opis SEO daje
+  metraż/działkę, ale nie geometrię, więc dla dopasowań TYLKO na tych dwóch
+  portalach werdykt rzadko dojdzie do CONFIRMED (brak najsilniejszego sygnału).
 - KIEG WMS czasem nie zwraca danych (na próbce 20 leadów ~4 miały
   `parcel_owner_group=None` mimo poprawnego numeru działki) — przyczyna
   nieznana, do zbadania jeśli ten sygnał ma być kluczowy.

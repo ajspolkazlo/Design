@@ -7,10 +7,12 @@ Uzycie:
     python tools/report_xlsx.py [sciezka_wyjsciowa.xlsx] [--status scored]
 
 Arkusze:
-  1. Dashboard — KPI + wykresy (werdykty, portale, gminy, wlasciciele dzialek)
-  2. Leady     — pelna tabela z autofiltrem, werdyktem i POWODAMI werdyktu,
-                 klikalnymi linkami do ogloszen, kolorowaniem po werdykcie
-  3. Legenda   — metodologia, definicje, znane ograniczenia
+  1. Leady   — pelna tabela z autofiltrem, werdyktem i POWODAMI werdyktu,
+               klikalnymi linkami do ogloszen per portal, kolorowaniem po werdykcie
+  2. Legenda — metodologia, definicje, znane ograniczenia
+
+(Wczesniejsza wersja miala tez arkusz Dashboard z KPI/wykresami — usuniety na
+zyczenie, wygladal fatalnie w renderowaniu Excela.)
 
 Zrodlem jest baza SQLite (nie CSV) — raport siega po verify_json/on_portal_json,
 ktorych nie ma w uproszczonym eksporcie CSV.
@@ -21,13 +23,11 @@ from __future__ import annotations
 import json
 import sqlite3
 import sys
-from collections import Counter
 from pathlib import Path
 
 import pandas as pd
 import yaml
 from openpyxl import Workbook
-from openpyxl.chart import BarChart, PieChart, Reference
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
@@ -45,7 +45,6 @@ CONTACT_STATUSES = ["", "Nie kontaktowano", "W trakcie", "Skontaktowano", "Odrzu
 # ---- paleta ----
 C_HEAD = "1F3864"      # granat naglowka
 C_HEAD_TXT = "FFFFFF"
-C_KPI_BG = "EDF2FA"
 C_BORDER = "D6DCE5"
 VERDICT_STYLE = {
     "CONFIRMED": ("C6EFCE", "006100", "✔ potwierdzone"),
@@ -186,118 +185,9 @@ def build(out_path: Path, status: str = "scored") -> None:
 
     wb = Workbook()
 
-    # ============================ DASHBOARD ============================
-    ds = wb.active
-    ds.title = "Dashboard"
-    ds.sheet_view.showGridLines = False
-
-    ds["B2"] = "DEV SCOUT — panel wyników"
-    ds["B2"].font = Font(name=FONT, bold=True, size=18, color=C_HEAD)
-    ds["B3"] = f"Próbka: {len(data)} leadów · wygenerowano automatycznie z bazy (status={status})"
-    ds["B3"].font = Font(name=FONT, size=10, color="808080")
-
-    # --- KPI ---
-    verdict_counts = Counter(data["Werdykt"])
-    kpis = [
-        ("LEADY W PRÓBCE", len(data), C_HEAD),
-        ("POTWIERDZONE NA PORTALU", verdict_counts.get("CONFIRMED", 0), "006100"),
-        ("CZYSTE (przewaga!)", verdict_counts.get("CLEAN", 0), "375623"),
-        ("DO PRZEGLĄDU", verdict_counts.get("REVIEW", 0), "9C6500"),
-        ("ODRZUCONE DOPASOWANIA", verdict_counts.get("REJECTED", 0), "9C0006"),
-    ]
-    col = 2
-    for label, value, color in kpis:
-        c1 = ds.cell(row=5, column=col, value=value)
-        c1.font = Font(name=FONT, bold=True, size=26, color=color)
-        c1.alignment = Alignment(horizontal="center")
-        c2 = ds.cell(row=6, column=col, value=label)
-        c2.font = Font(name=FONT, size=9, color="595959")
-        c2.alignment = Alignment(horizontal="center", wrap_text=True)
-        for rr in (5, 6):
-            ds.cell(row=rr, column=col).fill = PatternFill("solid", fgColor=C_KPI_BG)
-        ds.column_dimensions[get_column_letter(col)].width = 22
-        col += 2
-    ds.row_dimensions[5].height = 34
-
-    # --- dane pod wykresy (w ukrytych kolumnach na koncu) ---
-    anchor_col = 30  # kolumna AD i dalej — poza widokiem
-    def _write_series(start_row: int, title: str, counter: Counter) -> tuple[int, int]:
-        ds.cell(row=start_row, column=anchor_col, value=title)
-        i = start_row + 1
-        for k, v in counter.most_common():
-            ds.cell(row=i, column=anchor_col, value=str(k))
-            ds.cell(row=i, column=anchor_col + 1, value=v)
-            i += 1
-        return start_row + 1, i - 1
-
-    v_start, v_end = _write_series(2, "Werdykty", Counter(
-        VERDICT_STYLE[v][2] for v in data["Werdykt"]))
-    # dopasowania per portal, z pominieciem REJECTED (inna nieruchomosc — patrz
-    # src/verify.py) — liczy realne trafienia, nie kazde cokolwiek-znalezione
-    portal_counter = Counter()
-    for portal in PORTAL_ORDER:
-        label_name = PORTAL_LABELS[portal]
-        for verdict, _url in data[label_name]:
-            if verdict is not None and verdict != "REJECTED":
-                portal_counter[label_name] += 1
-    p_start, p_end = _write_series(12, "Portale", portal_counter or Counter({"(brak)": 0}))
-    g_start, g_end = _write_series(22, "Gminy", Counter(data["Gmina"]))
-    o_start, o_end = _write_series(34, "Właściciel działki", Counter(data["Właściciel działki (ewidencja)"]))
-
-    for cidx in (anchor_col, anchor_col + 1):
-        ds.column_dimensions[get_column_letter(cidx)].hidden = True
-
-    # --- wykresy ---
-    # WAZNE (bug znaleziony na zywo — poprzednia wersja raportu miala PUSTE
-    # wykresy): openpyxl/Excel domyslnie rysuje wykres tylko z WIDOCZNYCH
-    # komorek (chart.visible_cells_only = True domyslnie). Dane pod wykresy sa
-    # w kolumnach AD/AE, ktore celowo ukrywamy (zeby nie zasmiecac widoku) —
-    # bez wylaczenia tej flagi kazdy wykres renderuje sie jako pusty, bo caly
-    # jego zrodlowy zakres jest "niewidoczny". Ustawiamy visible_cells_only =
-    # False na kazdym wykresie, zeby dane z ukrytych kolumn nadal sie rysowaly.
-    pie = PieChart()
-    pie.title = "Werdykty weryfikacji"
-    pie.height, pie.width = 7.2, 9.5
-    pie.visible_cells_only = False
-    pie.add_data(Reference(ds, min_col=anchor_col + 1, min_row=v_start, max_row=v_end), titles_from_data=False)
-    pie.set_categories(Reference(ds, min_col=anchor_col, min_row=v_start, max_row=v_end))
-    ds.add_chart(pie, "B8")
-
-    bar = BarChart()
-    bar.type = "col"
-    bar.title = "Dopasowania per portal (bez odrzuconych)"
-    bar.height, bar.width = 7.2, 9.5
-    bar.legend = None
-    bar.visible_cells_only = False
-    bar.add_data(Reference(ds, min_col=anchor_col + 1, min_row=p_start, max_row=p_end), titles_from_data=False)
-    bar.set_categories(Reference(ds, min_col=anchor_col, min_row=p_start, max_row=p_end))
-    ds.add_chart(bar, "H8")
-
-    bar2 = BarChart()
-    bar2.type = "bar"
-    bar2.title = "Leady per gmina"
-    bar2.height, bar2.width = 7.2, 9.5
-    bar2.legend = None
-    bar2.visible_cells_only = False
-    bar2.add_data(Reference(ds, min_col=anchor_col + 1, min_row=g_start, max_row=g_end), titles_from_data=False)
-    bar2.set_categories(Reference(ds, min_col=anchor_col, min_row=g_start, max_row=g_end))
-    ds.add_chart(bar2, "B24")
-
-    pie2 = PieChart()
-    pie2.title = "Właściciel działki (ewidencja gruntów)"
-    pie2.height, pie2.width = 7.2, 9.5
-    pie2.visible_cells_only = False
-    pie2.add_data(Reference(ds, min_col=anchor_col + 1, min_row=o_start, max_row=o_end), titles_from_data=False)
-    pie2.set_categories(Reference(ds, min_col=anchor_col, min_row=o_start, max_row=o_end))
-    ds.add_chart(pie2, "H24")
-
-    ds["B40"] = "Jak czytać: werdykty pochodzą z wielopoziomowej weryfikacji (geometria działki, rynek pierwotny/wtórny,"
-    ds["B41"] = "metraż vs kubatura z wniosku, wiek ogłoszenia, ewidencja gruntów) — szczegóły w arkuszu Legenda."
-    for rr in (40, 41):
-        ds.cell(row=rr, column=2).font = Font(name=FONT, size=9, italic=True, color="808080")
-
     # ============================ LEADY ============================
-    ws = wb.create_sheet("Leady")
+    ws = wb.active
+    ws.title = "Leady"
     headers = [c for c in data.columns if not c.startswith("_")]
     ws.append(headers)
 

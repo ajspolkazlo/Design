@@ -235,7 +235,7 @@ def step_enrich(cfg: dict) -> None:
                     elif portal_name == "olx" and m.olx_offer:
                         facts = verify.olx_facts_from_offer(m.olx_offer)
                     else:
-                        facts = verify.fetch_html_facts(m.url)
+                        facts = verify.fetch_html_facts(portal_name, m.url)
                     match_verdicts.append(
                         verify.judge_match(portal_name, m.url, facts, lead_ctx, parcel_info, verify_cfg))
 

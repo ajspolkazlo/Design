@@ -110,3 +110,73 @@ def test_best_verdict_prefers_confirmed_over_rejected():
 
 def test_best_verdict_empty_is_none():
     assert verify.best_verdict([]) is None
+
+
+# ------------------- ekstrakcja strukturalna per-portal -------------------
+# Zweryfikowane na zywo (22.07.2026) na realnych ofertach; testy tu uzywaja
+# syntetycznego HTML (bez sieci) do pilnowania samego parsowania.
+
+def test_meta_content_ignores_attribute_order():
+    # zweryfikowane na zywo: Gratka i Morizon ukladaja atrybuty <meta> w roznej
+    # kolejnosci (raz property przed content, raz po) — parsowanie nie moze
+    # zakladac konkretnej kolejnosci
+    html_a = '<meta property="og:description" content="wersja A">'
+    html_b = '<meta name="og:description" content="wersja B" property="og:description">'
+    assert verify._meta_content(html_a, "og:description") == "wersja A"
+    assert verify._meta_content(html_b, "og:description") == "wersja B"
+
+
+def test_facts_from_meta_description_parses_area_and_plot():
+    # dokladny format zweryfikowany na zywo, identyczny na Gratka i Morizon
+    # (wspolny wlasciciel, Grupa Domodi) dla tej samej nieruchomosci
+    body = '<meta property="og:description" content="Sprawdź dom - 296 m² (pow. działki 1 224 m²) za 1 599 000 zł - Boża Wola">'
+    facts = verify._facts_from_meta_description(body)
+    assert facts is not None
+    assert facts.area_m2 == 296.0
+    assert facts.terrain_m2 == 1224.0
+
+
+def test_facts_from_meta_description_handles_nbsp():
+    # NBSP (\xa0) jako separator tysiecy — zweryfikowane na zywo na Morizon
+    body = '<meta name="og:description" content="dom - 296 m² (pow. działki 1\xa0224 m²) za 1 599 000 zł">'
+    facts = verify._facts_from_meta_description(body)
+    assert facts is not None
+    assert facts.terrain_m2 == 1224.0
+
+
+def test_facts_from_meta_description_none_when_no_match():
+    assert verify._facts_from_meta_description('<meta name="description" content="zupelnie inny tekst">') is None
+
+
+def test_facts_from_domiporta_requires_matching_url():
+    import json as json_module
+    ld = {
+        "@type": "RealEstateListing", "url": "https://www.domiporta.pl/nieruchomosci/x/123456",
+        "datePosted": "2026-01-07",
+        "itemOffered": {"floorSize": {"value": 140}, "yearBuilt": 2025,
+                         "geo": {"latitude": 52.14, "longitude": 20.71}},
+    }
+    body = f'<script type="application/ld+json">{json_module.dumps(ld)}</script>'
+    # URL się zgadza -> dane zaufane
+    facts = verify._facts_from_domiporta(body, "https://www.domiporta.pl/nieruchomosci/x/123456")
+    assert facts is not None
+    assert facts.area_m2 == 140
+    assert facts.lat == 52.14
+
+    # URL się NIE zgadza (np. blok z innej/kategorii strony) -> odrzucone,
+    # zeby nie podpisac cudzych danych pod nasz lead
+    facts_wrong = verify._facts_from_domiporta(body, "https://www.domiporta.pl/nieruchomosci/inna-oferta/999999")
+    assert facts_wrong is None
+
+
+def test_facts_from_rynekpierwotny_matches_by_path():
+    import json as json_module
+    ld = {
+        "@type": "ApartmentComplex", "url": "/oferty/csi-development/osiedle-x-14812/",
+        "geo": {"latitude": 52.22, "longitude": 20.80},
+    }
+    body = f'<script type="application/ld+json">{json_module.dumps(ld)}</script>'
+    facts = verify._facts_from_rynekpierwotny(body, "https://rynekpierwotny.pl/oferty/csi-development/osiedle-x-14812/")
+    assert facts is not None
+    assert facts.market == "primary"
+    assert facts.lat == 52.22
