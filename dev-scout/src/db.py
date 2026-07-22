@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS leads (
     gmina TEXT,
     miejscowosc TEXT,
     ulica TEXT,
+    numer_domu TEXT,
+    adres_pelny TEXT,          -- pelny adres do samodzielnej weryfikacji (patrz main.py step_enrich)
     kategoria_obiektu TEXT,
     inwestor TEXT,
     liczba_budynkow TEXT,
@@ -36,6 +38,21 @@ CREATE TABLE IF NOT EXISTS leads (
     first_seen TEXT DEFAULT (datetime('now')),
     last_updated TEXT DEFAULT (datetime('now'))
 );
+
+-- Cache trwaly (przezywa kolejne uruchomienia enrichu, w odroznieniu od cache w
+-- pamieci procesu w verify.py) dla zapytan sieciowych keyowanych po numerze
+-- dzialki lub adresie: ULDK (geometria/centroid dzialki), KIEG WMS (ewidencja
+-- gruntow), Nominatim (geokodowanie po adresie). Bez tego kazde ponowne
+-- uruchomienie enrichu na tych samych leadach (np. re-check, powtorne testy)
+-- odpytuje te same zewnetrzne API od nowa. `kind` rozroznia rodzaj wpisu,
+-- `key` to parcel_id albo znormalizowany adres — patrz src/geo_cache.py.
+CREATE TABLE IF NOT EXISTS geo_cache (
+    kind TEXT NOT NULL,
+    key TEXT NOT NULL,
+    value_json TEXT NOT NULL,
+    cached_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (kind, key)
+);
 """
 
 # Kolumny dodane po pierwszych produkcyjnych bazach — CREATE TABLE IF NOT EXISTS
@@ -43,6 +60,8 @@ CREATE TABLE IF NOT EXISTS leads (
 # (idempotentnie: "duplicate column name" ignorujemy).
 _MIGRATIONS = [
     "ALTER TABLE leads ADD COLUMN verify_json TEXT",
+    "ALTER TABLE leads ADD COLUMN numer_domu TEXT",
+    "ALTER TABLE leads ADD COLUMN adres_pelny TEXT",
 ]
 
 
@@ -68,15 +87,16 @@ def upsert_leads(conn: sqlite3.Connection, rows: list[dict]) -> int:
         if cur.fetchone():
             continue
         cur.execute(
-            """INSERT INTO leads (id_sprawy, data, gmina, miejscowosc, ulica, kategoria_obiektu,
-                                   inwestor, liczba_budynkow, is_likely_company, raw_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO leads (id_sprawy, data, gmina, miejscowosc, ulica, numer_domu,
+                                   kategoria_obiektu, inwestor, liczba_budynkow, is_likely_company, raw_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 row["id_sprawy"],
                 row.get("data"),
                 row.get("gmina"),
                 row.get("miejscowosc"),
                 row.get("ulica"),
+                row.get("numer_domu"),
                 row.get("kategoria_obiektu"),
                 row.get("inwestor"),
                 row.get("liczba_budynkow"),

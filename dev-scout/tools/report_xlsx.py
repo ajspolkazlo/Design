@@ -30,9 +30,17 @@ from openpyxl import Workbook
 from openpyxl.chart import BarChart, PieChart, Reference
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.datavalidation import DataValidation
 
 ROOT = Path(__file__).parent.parent
 FONT = "Calibri"
+
+PORTAL_ORDER = ["otodom", "olx", "gratka", "morizon", "domiporta", "rynekpierwotny"]
+PORTAL_LABELS = {
+    "otodom": "Otodom", "olx": "OLX", "gratka": "Gratka",
+    "morizon": "Morizon", "domiporta": "Domiporta", "rynekpierwotny": "RynekPierwotny",
+}
+CONTACT_STATUSES = ["", "Nie kontaktowano", "W trakcie", "Skontaktowano", "Odrzucone"]
 
 # ---- paleta ----
 C_HEAD = "1F3864"      # granat naglowka
@@ -79,11 +87,42 @@ def lead_verdict_and_reasons(row) -> tuple[str, str, str, str]:
     lines, links = [], []
     for m in sorted(matches, key=lambda m: order.index(m["verdict"])):
         reasons = "; ".join(m.get("reasons") or ["(bez powodów)"])
-        lines.append(f"[{m['portal']} → {m['verdict']}] {reasons}")
+        source = (m.get("facts") or {}).get("source", "")
+        source_txt = f" [źródło danych: {source}]" if source else ""
+        lines.append(f"[{m['portal']} → {m['verdict']}] {reasons}{source_txt}")
         if m["verdict"] != "REJECTED":
             links.append(m["url"])
     first_url = links[0] if links else (matches[0]["url"] if matches else "")
     return best, "\n".join(lines), "\n".join(links), first_url
+
+
+def per_portal_matches(row) -> dict[str, tuple[str, str]]:
+    """{portal: (werdykt, url)} dla kazdego portalu z verify_json.matches —
+    do osobnych, klikalnych kolumn per portal (na zyczenie: latwiejsze
+    skanowanie wzrokiem niz jeden blok tekstu, kluczowe przy skali 884 leadow)."""
+    try:
+        vj = json.loads(row.get("verify_json") or "{}")
+    except (TypeError, ValueError):
+        vj = {}
+    out = {}
+    for m in vj.get("matches") or []:
+        out[m["portal"]] = (m["verdict"], m["url"])
+    return out
+
+
+def gmaps_link(row) -> str | None:
+    """Link do Google Maps do SAMODZIELNEJ weryfikacji lokalizacji — wspolrzedne
+    (centroid dzialki z ULDK, najdokladniejsze) gdy dostepne, inaczej
+    wyszukiwanie po pelnym adresie z RWDZ (patrz main.py::step_enrich,
+    adres_pelny)."""
+    lat, lon = row.get("lat"), row.get("lon")
+    if pd.notna(lat) and pd.notna(lon):
+        return f"https://www.google.com/maps?q={lat},{lon}"
+    adres = row.get("adres_pelny")
+    if pd.notna(adres) and adres:
+        import urllib.parse
+        return f"https://www.google.com/maps/search/?api=1&query={urllib.parse.quote(str(adres))}"
+    return None
 
 
 def parcel_summary(row) -> tuple[str, str, int | None]:
@@ -114,24 +153,35 @@ def build(out_path: Path, status: str = "scored") -> None:
             serial_txt = f"{serial} wniosków w RWDZ (seryjny)" if serial >= 3 else f"{serial} wnioski w RWDZ"
         elif pd.notna(r["inwestor"]):
             serial_txt = "1 wniosek"
-        rows.append({
+        portal_matches = per_portal_matches(r)
+        row = {
             "Score": int(r["score"]) if pd.notna(r["score"]) else None,
             "Werdykt": verdict,
             "Data zgłoszenia": str(r["data"])[:10] if pd.notna(r["data"]) else "",
             "Gmina": r["gmina"] if pd.notna(r["gmina"]) else "",
             "Miejscowość": r["miejscowosc"] if pd.notna(r["miejscowosc"]) else "",
-            "Ulica": r["ulica"] if pd.notna(r["ulica"]) else "",
+            # Adres pelny (ulica+numer domu z RWDZ, albo ulica odzyskana z ULDK,
+            # oznaczona jako przybliżona) — zeby Adam mogl SAM zweryfikowac
+            # lokalizacje niezaleznie od tego, co znalazl portal_check/verify.
+            "Adres (pełny)": r["adres_pelny"] if pd.notna(r.get("adres_pelny")) else "",
             "Rodzaj inwestycji": r["kategoria_obiektu"] if pd.notna(r["kategoria_obiektu"]) else "",
             "Inwestor": inwestor,
             "Seryjność inwestora": serial_txt,
             "Właściciel działki (ewidencja)": owner,
             "Pow. działki (ewidencja)": parcel_area,
             "Uzasadnienie werdyktu": reasons,
-            "Linki do ogłoszeń": links,
+        }
+        for portal in PORTAL_ORDER:
+            row[PORTAL_LABELS[portal]] = portal_matches.get(portal, (None, None))
+        row.update({
+            "Mapa": "Zobacz na mapie" if gmaps_link(r) else "",
+            "Status kontaktu": "",
             "Odległość (km)": round(r["distance_km"], 1) if pd.notna(r["distance_km"]) else None,
             "Nr sprawy (GUNB)": r["id_sprawy"],
             "_first_url": first_url,
+            "_gmaps_url": gmaps_link(r),
         })
+        rows.append(row)
     data = pd.DataFrame(rows)
 
     wb = Workbook()
@@ -143,7 +193,7 @@ def build(out_path: Path, status: str = "scored") -> None:
 
     ds["B2"] = "DEV SCOUT — panel wyników"
     ds["B2"].font = Font(name=FONT, bold=True, size=18, color=C_HEAD)
-    ds["B3"] = f"Próbka: {len(data)} leadów z 2026 · wygenerowano automatycznie z bazy (status={status})"
+    ds["B3"] = f"Próbka: {len(data)} leadów · wygenerowano automatycznie z bazy (status={status})"
     ds["B3"].font = Font(name=FONT, size=10, color="808080")
 
     # --- KPI ---
@@ -182,12 +232,14 @@ def build(out_path: Path, status: str = "scored") -> None:
 
     v_start, v_end = _write_series(2, "Werdykty", Counter(
         VERDICT_STYLE[v][2] for v in data["Werdykt"]))
+    # dopasowania per portal, z pominieciem REJECTED (inna nieruchomosc — patrz
+    # src/verify.py) — liczy realne trafienia, nie kazde cokolwiek-znalezione
     portal_counter = Counter()
-    for links in data["Linki do ogłoszeń"]:
-        for ln in str(links).splitlines():
-            for portal in ("otodom", "olx", "gratka", "morizon", "domiporta", "rynekpierwotny"):
-                if portal in ln:
-                    portal_counter[portal] += 1
+    for portal in PORTAL_ORDER:
+        label_name = PORTAL_LABELS[portal]
+        for verdict, _url in data[label_name]:
+            if verdict is not None and verdict != "REJECTED":
+                portal_counter[label_name] += 1
     p_start, p_end = _write_series(12, "Portale", portal_counter or Counter({"(brak)": 0}))
     g_start, g_end = _write_series(22, "Gminy", Counter(data["Gmina"]))
     o_start, o_end = _write_series(34, "Właściciel działki", Counter(data["Właściciel działki (ewidencja)"]))
@@ -196,9 +248,17 @@ def build(out_path: Path, status: str = "scored") -> None:
         ds.column_dimensions[get_column_letter(cidx)].hidden = True
 
     # --- wykresy ---
+    # WAZNE (bug znaleziony na zywo — poprzednia wersja raportu miala PUSTE
+    # wykresy): openpyxl/Excel domyslnie rysuje wykres tylko z WIDOCZNYCH
+    # komorek (chart.visible_cells_only = True domyslnie). Dane pod wykresy sa
+    # w kolumnach AD/AE, ktore celowo ukrywamy (zeby nie zasmiecac widoku) —
+    # bez wylaczenia tej flagi kazdy wykres renderuje sie jako pusty, bo caly
+    # jego zrodlowy zakres jest "niewidoczny". Ustawiamy visible_cells_only =
+    # False na kazdym wykresie, zeby dane z ukrytych kolumn nadal sie rysowaly.
     pie = PieChart()
     pie.title = "Werdykty weryfikacji"
     pie.height, pie.width = 7.2, 9.5
+    pie.visible_cells_only = False
     pie.add_data(Reference(ds, min_col=anchor_col + 1, min_row=v_start, max_row=v_end), titles_from_data=False)
     pie.set_categories(Reference(ds, min_col=anchor_col, min_row=v_start, max_row=v_end))
     ds.add_chart(pie, "B8")
@@ -208,6 +268,7 @@ def build(out_path: Path, status: str = "scored") -> None:
     bar.title = "Dopasowania per portal (bez odrzuconych)"
     bar.height, bar.width = 7.2, 9.5
     bar.legend = None
+    bar.visible_cells_only = False
     bar.add_data(Reference(ds, min_col=anchor_col + 1, min_row=p_start, max_row=p_end), titles_from_data=False)
     bar.set_categories(Reference(ds, min_col=anchor_col, min_row=p_start, max_row=p_end))
     ds.add_chart(bar, "H8")
@@ -217,6 +278,7 @@ def build(out_path: Path, status: str = "scored") -> None:
     bar2.title = "Leady per gmina"
     bar2.height, bar2.width = 7.2, 9.5
     bar2.legend = None
+    bar2.visible_cells_only = False
     bar2.add_data(Reference(ds, min_col=anchor_col + 1, min_row=g_start, max_row=g_end), titles_from_data=False)
     bar2.set_categories(Reference(ds, min_col=anchor_col, min_row=g_start, max_row=g_end))
     ds.add_chart(bar2, "B24")
@@ -224,6 +286,7 @@ def build(out_path: Path, status: str = "scored") -> None:
     pie2 = PieChart()
     pie2.title = "Właściciel działki (ewidencja gruntów)"
     pie2.height, pie2.width = 7.2, 9.5
+    pie2.visible_cells_only = False
     pie2.add_data(Reference(ds, min_col=anchor_col + 1, min_row=o_start, max_row=o_end), titles_from_data=False)
     pie2.set_categories(Reference(ds, min_col=anchor_col, min_row=o_start, max_row=o_end))
     ds.add_chart(pie2, "H24")
@@ -251,11 +314,16 @@ def build(out_path: Path, status: str = "scored") -> None:
     ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{len(data) + 1}"
 
     verdict_col = headers.index("Werdykt") + 1
-    links_col = headers.index("Linki do ogłoszeń") + 1
+    portal_cols = {PORTAL_LABELS[p]: headers.index(PORTAL_LABELS[p]) + 1 for p in PORTAL_ORDER}
+    map_col = headers.index("Mapa") + 1
+    contact_col = headers.index("Status kontaktu") + 1
 
     for ridx, (_, row) in enumerate(data.iterrows(), start=2):
         for cidx, h in enumerate(headers, start=1):
-            cell = ws.cell(row=ridx, column=cidx, value=row[h])
+            value = row[h]
+            if h in PORTAL_LABELS.values():
+                continue  # pisane osobno nizej (hiperlacz + kolor per werdykt dopasowania)
+            cell = ws.cell(row=ridx, column=cidx, value=value)
             cell.font = Font(name=FONT, size=10)
             cell.border = border
             cell.alignment = Alignment(vertical="top", wrap_text=True)
@@ -265,20 +333,56 @@ def build(out_path: Path, status: str = "scored") -> None:
         vcell.value = label
         vcell.fill = PatternFill("solid", fgColor=fill)
         vcell.font = Font(name=FONT, size=10, bold=True, color=txt_color)
-        # hiperlacze do pierwszego zaakceptowanego ogloszenia
-        if row["_first_url"]:
-            lcell = ws.cell(row=ridx, column=links_col)
-            lcell.hyperlink = row["_first_url"]
-            lcell.font = Font(name=FONT, size=10, color="0563C1", underline="single")
+
+        # kolumny per portal: puste gdy brak dopasowania, inaczej klikalny link
+        # z kolorem tla wg werdyktu TEGO KONKRETNEGO dopasowania (nie ogolnego
+        # werdyktu leada) — pozwala od razu zobaczyc, KTORY portal dal jaki wynik.
+        for portal in PORTAL_ORDER:
+            label_name = PORTAL_LABELS[portal]
+            verdict, url = row[label_name]
+            pcell = ws.cell(row=ridx, column=portal_cols[label_name])
+            pcell.border = border
+            pcell.alignment = Alignment(vertical="top", horizontal="center")
+            if verdict is None:
+                pcell.value = "—"
+                pcell.font = Font(name=FONT, size=10, color="BFBFBF")
+            else:
+                p_fill, p_color, _ = VERDICT_STYLE.get(verdict, ("FFFFFF", "000000", verdict))
+                pcell.value = "ogłoszenie"
+                pcell.fill = PatternFill("solid", fgColor=p_fill)
+                pcell.font = Font(name=FONT, size=10, color=p_color, underline="single")
+                pcell.hyperlink = url
+
+        # link do mapy (patrz gmaps_link) — geometria dzialki z ULDK gdy jest,
+        # inaczej wyszukiwanie po pelnym adresie z RWDZ
+        if row["_gmaps_url"]:
+            mcell = ws.cell(row=ridx, column=map_col)
+            mcell.value = "Zobacz na mapie"
+            mcell.hyperlink = row["_gmaps_url"]
+            mcell.font = Font(name=FONT, size=10, color="0563C1", underline="single")
+            mcell.border = border
+            mcell.alignment = Alignment(horizontal="center")
+
+        ccell = ws.cell(row=ridx, column=contact_col)
+        ccell.border = border
+        ccell.font = Font(name=FONT, size=10)
+
+    # rozwijana lista w "Status kontaktu" — proste sledzenie kontaktu bez CRM
+    dv = DataValidation(type="list", formula1='"' + ",".join(s or "(puste)" for s in CONTACT_STATUSES[1:]) + '"',
+                         allow_blank=True)
+    ws.add_data_validation(dv)
+    dv.add(f"{get_column_letter(contact_col)}2:{get_column_letter(contact_col)}{len(data) + 1}")
 
     widths = {
         "Score": 7, "Werdykt": 17, "Data zgłoszenia": 11, "Gmina": 14, "Miejscowość": 14,
-        "Ulica": 14, "Rodzaj inwestycji": 34, "Inwestor": 24, "Seryjność inwestora": 15,
+        "Adres (pełny)": 34, "Rodzaj inwestycji": 34, "Inwestor": 24, "Seryjność inwestora": 15,
         "Właściciel działki (ewidencja)": 10, "Pow. działki (ewidencja)": 10,
-        "Uzasadnienie werdyktu": 70, "Linki do ogłoszeń": 44,
+        "Uzasadnienie werdyktu": 70, "Mapa": 14, "Status kontaktu": 16,
         "Odległość (km)": 9, "Nr sprawy (GUNB)": 24,
     }
     for i, h in enumerate(headers, start=1):
+        if h in PORTAL_LABELS.values():
+            widths[h] = 12
         ws.column_dimensions[get_column_letter(i)].width = widths.get(h, 16)
 
     # ============================ LEGENDA ============================
@@ -316,7 +420,29 @@ def build(out_path: Path, status: str = "scored") -> None:
         ("• OLX celowo rozmywa pin do ~1 km — używany tylko wspierająco, nigdy do odrzucenia.", 10, False),
         ("• Kubatura bywa podana dla CAŁEGO zamierzenia (kilka budynków) — widełki wtedy zawyżone;", 10, False),
         ("  umiarkowane rozjazdy metrażu celowo nie karzą werdyktu.", 10, False),
-        ("• 'czysty' oznacza stan NA DZIŚ — re-check co recheck_after_days (config) wyłapie późniejsze oferty.", 10, False),
+        ("• 'czysty' oznacza stan w dniu sprawdzenia — krok `recheck` (uruchamiany PRZED `enrich` w cyklu", 10, False),
+        ("  dziennym) automatycznie cofa taki lead do ponownego sprawdzenia po recheck_after_days.", 10, False),
+        ("", 10, False),
+        ("KOLUMNY DODATKOWE", 11, True),
+        ("Adres (pełny) — ulica + numer domu wprost z RWDZ, gdy są wypełnione; gdy RWDZ nie ma ulicy,", 10, False),
+        ("  pokazana jest ulica ODZYSKANA z lokalizacji działki (ULDK + geokodowanie odwrotne), oznaczona", 10, False),
+        ("  jawnie jako 'przybliżony' — to NIE jest potwierdzony adres z wniosku, tylko najbliższa ulica.", 10, False),
+        ("  Cel: Adam może sam zlokalizować i zweryfikować inwestycję niezależnie od wyniku portal_check.", 10, False),
+        ("Kolumny portali (Otodom/OLX/Gratka/Morizon/Domiporta/RynekPierwotny) — puste ('—') gdy brak", 10, False),
+        ("  dopasowania na danym portalu, inaczej klikalny link kolorowany wg werdyktu TEGO KONKRETNEGO", 10, False),
+        ("  dopasowania (może się różnić między portalami dla tego samego leada).", 10, False),
+        ("Mapa — link do Google Maps: współrzędne działki z ULDK gdy dostępne (najdokładniejsze), inaczej", 10, False),
+        ("  wyszukiwanie po adresie z kolumny 'Adres (pełny)'.", 10, False),
+        ("Status kontaktu — puste pole do ręcznego zaznaczenia (rozwijana lista), czysto do Twojego użytku,", 10, False),
+        ("  narzędzie tego nie odczytuje ani nie nadpisuje.", 10, False),
+        ("Uzasadnienie werdyktu — każda linia kończy się '[źródło danych: ...]': otodom_json/olx_api = dane", 10, False),
+        ("  strukturalne (wysoka pewność), html_regex = wyciągnięte z tekstu strony (niższa pewność).", 10, False),
+        ("", 10, False),
+        ("SCORING korzysta teraz z werdyktów (wcześniej nie korzystał — patrz docs/AUDYT.md):", 11, True),
+        ("• Werdykt CONFIRMED odejmuje punkty (inwestycja już się reklamuje — to przeciwieństwo przewagi",  10, False),
+        ("  'zanim zaczną marketing', która jest sensem tego narzędzia).", 10, False),
+        ("• Seryjny inwestor (≥3 wnioski w RWDZ) i działka należąca do spółki (ewidencja gruntów) dodają", 10, False),
+        ("  punkty — działają NIEZALEŻNIE od tego, czy RWDZ ma wypełnioną nazwę inwestora.", 10, False),
     ]
     for i, (text, size, bold) in enumerate(L, start=2):
         c = lg.cell(row=i, column=2, value=text)

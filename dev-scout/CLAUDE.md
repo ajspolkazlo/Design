@@ -93,8 +93,11 @@ adresu.
 Dodaj uruchamianie cykliczne — najprościej cron (Linux/Mac) albo
 Harmonogram zadań (Windows), np. raz dziennie w nocy:
 ```
-0 4 * * * cd /sciezka/do/dev-scout && python -m src.main run && python -m src.main enrich && python -m src.main export
+0 4 * * * cd /sciezka/do/dev-scout && python -m src.main run && python -m src.main recheck && python -m src.main enrich && python -m src.main score && python -m src.main export
 ```
+(`recheck` przed `enrich`: patrz `src/main.py::step_recheck` — cofa leady
+starsze niz `portal_check.recheck_after_days`, zeby zostaly ponownie sprawdzone
+w tym samym przebiegu co faktycznie nowe zgloszenia.)
 Rozważ też wersję w n8n, jeśli Adam wolałby mieć to w swoim istniejącym
 stacku n8n zamiast czystego crona — logika w `src/` jest niezależna od tego,
 co ją odpala.

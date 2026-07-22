@@ -49,11 +49,44 @@ COLUMN_HINTS: dict[str, list[str]] = {
     "gmina": ["gmina", "miasto"],
     "miejscowosc": ["miejscowosc", "miasto"],
     "ulica": ["ulica"],
+    # RWDZ dzieli nazwe ulicy na dwie kolumny: "ulica" = czlon glowny (zwykle
+    # nazwisko/rzeczownik, uzywany do alfabetycznego sortowania w rejestrze),
+    # "ulica_dalej" = czlon dodatkowy (imie/tytul), ktory POPRZEDZA czlon
+    # glowny w naturalnym zapisie. Zweryfikowane na 30 realnych przykladach:
+    # ulica="Piłsudskiego", ulica_dalej="Józefa " -> pelna nazwa "Józefa
+    # Piłsudskiego"; ulica="Abrahama", ulica_dalej="gen. Romana " -> "gen.
+    # Romana Abrahama". Bez tego skladania nazwa ulicy jest ucieta/mylaca.
+    "ulica_ciag_dalszy": ["ulica dalej", "ulica c d", "ciag dalszy ulicy"],
+    "numer_domu": ["nr domu", "numer domu", "numer nieruchomosci"],
     "inwestor": ["inwestor", "nazwa wnioskodawcy", "wnioskodawca"],
     "organ": ["organ", "urzad"],
     "liczba_budynkow": ["liczba budynkow", "ilosc budynkow"],
     "liczba_lokali": ["liczba lokali", "liczba mieszkan"],
 }
+
+# Wartosci-smieci w numer_domu, ktore realnie oznaczaja "brak numeru" (np.
+# pojedyncza kropka jako placeholder w niektorych wnioskach) — zweryfikowane
+# na zywo w wynik_mazowieckie.csv.
+_JUNK_HOUSE_NUMBERS = {"", ".", "-", "brak", "b/n", "bn"}
+
+
+def compose_street_name(ulica: object, ulica_dalej: object) -> str | None:
+    """Sklada pelna nazwe ulicy z dwoch kolumn RWDZ (patrz COLUMN_HINTS
+    powyzej). Kolejnosc: ulica_dalej (imie/tytul) + ulica (nazwisko/rdzen) —
+    to naturalny szyk polskich nazw ulic. Gdy ulica_dalej brak, zwraca sama
+    ulice bez zmian (wiekszosc ulic nie ma tego rozbicia w ogole)."""
+    main = str(ulica).strip() if ulica is not None and pd.notna(ulica) else ""
+    if not main:
+        return None
+    extra = str(ulica_dalej).strip() if ulica_dalej is not None and pd.notna(ulica_dalej) else ""
+    return f"{extra} {main}".strip() if extra else main
+
+
+def clean_house_number(numer_domu: object) -> str | None:
+    if numer_domu is None or (isinstance(numer_domu, float) and pd.isna(numer_domu)):
+        return None
+    v = str(numer_domu).strip()
+    return v if v and v.lower() not in _JUNK_HOUSE_NUMBERS else None
 
 
 def _strip_diacritics(text: str) -> str:
@@ -119,6 +152,23 @@ def normalize_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     for field, col in mapping.items():
         out[f"norm_{field}"] = out[col]
+
+    # norm_ulica nadpisujemy pelnym skladem (ulica_dalej + ulica) zamiast
+    # samego czlonu glownego — patrz compose_street_name() i komentarz przy
+    # COLUMN_HINTS["ulica_ciag_dalszy"] powyzej.
+    if "ulica" in mapping:
+        ulica_dalej_col = mapping.get("ulica_ciag_dalszy")
+        out["norm_ulica"] = out.apply(
+            lambda r: compose_street_name(
+                r[mapping["ulica"]], r[ulica_dalej_col] if ulica_dalej_col else None
+            ),
+            axis=1,
+        )
+    if "numer_domu" in mapping:
+        out["norm_numer_domu"] = out[mapping["numer_domu"]].apply(clean_house_number)
+    else:
+        out["norm_numer_domu"] = None
+
     return out
 
 

@@ -216,6 +216,12 @@ scoring:
     swiezy_wpis: 15       # < 30 dni od daty zgloszenia/decyzji
     mala_skala: 15        # 2-10 budynkow = bardziej "boutique"
     bliska_odleglosc: 10  # blizej centrum Warszawy w ramach 20-30 km
+    # Wagi korzystajace z werdyktow src/verify.py (patrz docs/AUDYT.md, sekcja 3
+    # poprzedniej wersji audytu — to byla najwieksza luka: scoring w ogole nie
+    # czytal verify_json).
+    kara_potwierdzone_na_portalu: 30  # werdykt CONFIRMED = inwestycja juz reklamowana, odejmowane od score
+    seryjny_inwestor: 15              # inwestor ma >= verify.serial_investor_min wnioskow w RWDZ
+    dzialka_spolki: 10                # wlasciciel dzialki (ewidencja gruntow) to spolka prawa handlowego
   # punkt odniesienia do liczenia odleglosci — Plac Defilad, centrum Warszawy
   warszawa_centrum:
     lat: 52.2297

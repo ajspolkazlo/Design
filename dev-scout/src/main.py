@@ -3,9 +3,15 @@ Dev Scout — orkiestrator calego pipeline'u.
 
 Uzycie:
     python -m src.main run              # pelny przebieg: fetch + parse + filter + zapis nowych
+    python -m src.main recheck          # cofnij 'scored'->'new' dla leadow starszych niz recheck_after_days
     python -m src.main enrich           # dociagnij KRS/CEIDG + geokodowanie dla rekordow "new"
+    python -m src.main score            # policz score dla rekordow "enriched"
     python -m src.main export           # wyeksportuj wynik do CSV + GeoJSON
     python -m src.main run --skip-fetch # jak run, ale uzyj juz pobranego pliku CSV z data/raw
+
+Cykl dzienny (cron): run -> recheck -> enrich -> score -> export. `recheck`
+PRZED `enrich`, zeby przekwalifikowane leady (patrz step_recheck) zostaly
+wzbogacone w tym samym przebiegu co faktycznie nowe.
 
 Kazdy krok jest osobny i idempotentny — mozna je odpalac osobno w n8n/cron
 albo wszystkie naraz.
@@ -21,7 +27,7 @@ from pathlib import Path
 import pandas as pd
 import yaml
 
-from src import cadastral, company_lookup, db, geocode, portal_check, rwdz_fetch, rwdz_parse, scoring, verify
+from src import cadastral, company_lookup, db, geo_cache, geocode, portal_check, rwdz_fetch, rwdz_parse, scoring, verify
 from src.filters import apply_filters
 
 log = logging.getLogger("dev_scout")
@@ -77,6 +83,7 @@ def step_store(cfg: dict, filtered_df: pd.DataFrame) -> int:
             "gmina": r.get("norm_gmina"),
             "miejscowosc": r.get("norm_miejscowosc"),
             "ulica": r.get("norm_ulica"),
+            "numer_domu": r.get("norm_numer_domu"),
             "kategoria_obiektu": r.get("norm_kategoria_obiektu"),
             "inwestor": r.get("norm_inwestor"),
             "liczba_budynkow": r.get("norm_liczba_budynkow"),
@@ -112,36 +119,74 @@ def step_enrich(cfg: dict) -> None:
             raw.get("jednosta_numer_ew"), raw.get("obreb_numer"), raw.get("numer_dzialki")
         )
 
+        # Cache trwaly (SQLite, patrz src/geo_cache.py) przed kazdym zapytaniem
+        # sieciowym keyowanym po numerze dzialki/adresie — bez tego kazdy
+        # ponowny `enrich` na tych samych leadach (re-check, powtorne testy)
+        # odpytuje ULDK/KIEG/Nominatim od nowa dla danych, ktore sie nie zmienily.
         lat, lon = None, None
         if parcel_id:
-            try:
-                coords = cadastral.fetch_parcel_centroid(parcel_id)
-                if coords:
-                    lat, lon = coords
-            except Exception:
-                log.exception("ULDK: nie udalo sie zgeokodowac dzialki %s dla %s", parcel_id, lead["id_sprawy"])
+            cached = geo_cache.get(conn, "parcel_centroid", parcel_id)
+            if cached:
+                lat, lon = cached["lat"], cached["lon"]
+            else:
+                try:
+                    coords = cadastral.fetch_parcel_centroid(parcel_id)
+                    if coords:
+                        lat, lon = coords
+                        geo_cache.set(conn, "parcel_centroid", parcel_id, {"lat": lat, "lon": lon})
+                except Exception:
+                    log.exception("ULDK: nie udalo sie zgeokodowac dzialki %s dla %s", parcel_id, lead["id_sprawy"])
 
         if lat is None:
             # fallback: Nominatim po adresie — gdy brak numeru dzialki albo
             # ULDK go nie rozpoznaje (np. dzialka scalona/podzielona od tego czasu)
-            try:
-                coords = geocode.geocode_address(lead["miejscowosc"] or "", lead["gmina"] or "", lead["ulica"] or None)
-                lat, lon = coords if coords else (None, None)
-            except Exception:
-                log.exception("Nie udalo sie zgeokodowac %s", lead["id_sprawy"])
-                lat, lon = None, None
+            geocode_key = f"{lead['miejscowosc'] or ''}|{lead['gmina'] or ''}|{lead['ulica'] or ''}"
+            cached = geo_cache.get(conn, "geocode_address", geocode_key)
+            if cached:
+                lat, lon = cached["lat"], cached["lon"]
+            else:
+                try:
+                    coords = geocode.geocode_address(lead["miejscowosc"] or "", lead["gmina"] or "", lead["ulica"] or None)
+                    lat, lon = coords if coords else (None, None)
+                    if coords:
+                        geo_cache.set(conn, "geocode_address", geocode_key, {"lat": lat, "lon": lon})
+                except Exception:
+                    log.exception("Nie udalo sie zgeokodowac %s", lead["id_sprawy"])
+                    lat, lon = None, None
 
         # Ulica do sprawdzenia portali: ta z RWDZ, albo — gdy brak — odzyskana
         # z dokladnych wspolrzednych ULDK przez odwrotne geokodowanie (patrz
         # geocode.reverse_geocode_street). To jedyny sposob na sensowne
         # sprawdzenie portali dla wiekszosci leadow, ktore nie maja ulicy
         # wprost w danych RWDZ.
+        recovered_street = False
         query_ulica = lead["ulica"]
         if not query_ulica and lat is not None and parcel_id:
-            try:
-                query_ulica = geocode.reverse_geocode_street(lat, lon)
-            except Exception:
-                log.exception("Odwrotne geokodowanie nie powiodlo sie dla %s", lead["id_sprawy"])
+            reverse_key = f"{lat:.5f},{lon:.5f}"
+            cached = geo_cache.get(conn, "reverse_geocode", reverse_key)
+            if cached:
+                query_ulica = cached.get("ulica")
+            else:
+                try:
+                    query_ulica = geocode.reverse_geocode_street(lat, lon)
+                    geo_cache.set(conn, "reverse_geocode", reverse_key, {"ulica": query_ulica})
+                except Exception:
+                    log.exception("Odwrotne geokodowanie nie powiodlo sie dla %s", lead["id_sprawy"])
+            recovered_street = bool(query_ulica)
+
+        # Pelny adres do NIEZALEZNEJ, RECZNEJ weryfikacji (na zyczenie Adama) —
+        # jesli RWDZ ma ulice+numer domu wprost, to jest to precyzyjny adres
+        # pocztowy; jesli ulica byla odzyskana z ULDK (odwrotne geokodowanie),
+        # oznaczamy to wprost jako "przyblizony", bo bez numeru domu to
+        # najblizsza znaleziona ulica, nie potwierdzony adres wniosku.
+        if lead["ulica"] and lead["numer_domu"]:
+            adres_pelny = f"{lead['ulica']} {lead['numer_domu']}, {lead['miejscowosc']}"
+        elif lead["ulica"]:
+            adres_pelny = f"{lead['ulica']}, {lead['miejscowosc']} (bez numeru domu w RWDZ)"
+        elif recovered_street and query_ulica:
+            adres_pelny = f"{query_ulica}, {lead['miejscowosc']} (przybliżony — RWDZ nie podaje ulicy, odzyskana z lokalizacji działki)"
+        else:
+            adres_pelny = f"{lead['miejscowosc']} (RWDZ nie podaje ulicy, nie udało się jej odzyskać)"
 
         # Dane dzialki z ewidencji gruntow (urzedowa powierzchnia + KATEGORIA
         # wlasciciela: osoba fizyczna vs spolka) i seryjnosc inwestora w RWDZ —
@@ -149,7 +194,15 @@ def step_enrich(cfg: dict) -> None:
         # leadow bez nazwy inwestora). Patrz src/verify.py.
         verify_cfg = {**verify.DEFAULTS, **(cfg.get("verify") or {})}
         data_dir = (ROOT / cfg["paths"]["db_path"]).parent
-        parcel_info = verify.parcel_official(parcel_id) if parcel_id else {}
+        parcel_info = {}
+        if parcel_id:
+            cached = geo_cache.get(conn, "parcel_official", parcel_id)
+            if cached:
+                parcel_info = cached
+            else:
+                parcel_info = verify.parcel_official(parcel_id)
+                if parcel_info.get("area_m2") is not None or parcel_info.get("owner_group"):
+                    geo_cache.set(conn, "parcel_official", parcel_id, parcel_info)
         serial_count = verify.investor_serial_count(lead["inwestor"], data_dir)
 
         on_portal_found, on_portal_json, on_portal_checked_at = None, None, None
@@ -219,6 +272,7 @@ def step_enrich(cfg: dict) -> None:
             conn, lead["id_sprawy"], status="enriched",
             krs_ceidg_json=info_json,
             lat=lat, lon=lon,
+            adres_pelny=adres_pelny,
             on_portal_found=on_portal_found,
             on_portal_json=on_portal_json,
             on_portal_checked_at=on_portal_checked_at,
@@ -227,6 +281,42 @@ def step_enrich(cfg: dict) -> None:
         )
     portal_check.close_browser()  # zamknij Chromium jesli backend browser byl uzyty
     conn.close()
+
+
+def step_recheck(cfg: dict) -> int:
+    """Cofa `scored` -> `new` dla leadow, ktore byly sprawdzone na portalach
+    ale albo nic nie znaleziono, albo w ogole nie dalo sie sprawdzic (brak
+    ulicy), i od tego sprawdzenia minelo wiecej niz `portal_check.recheck_after_days`.
+    Bez tego kroku `recheck_after_days` w config.yaml byl martwa wartoscia —
+    kod nigdzie jej nie czytal (patrz docs/AUDYT.md, sekcja 1) i lead raz
+    oznaczony jako "czysty" nigdy wiecej nie byl sprawdzany, mimo ze cala idea
+    projektu z CLAUDE.md to wlasnie zlapanie leada, ktory pojawi sie na
+    portalu PO pierwszym sprawdzeniu.
+
+    Leadow juz POTWIERDZONYCH (on_portal_found=1, verdykt CONFIRMED/LIKELY/
+    REVIEW) NIE cofamy — raz znaleziony lead zostaje oznaczony i widoczny do
+    wgladu (patrz CLAUDE.md: "Nie usuwaj leada z bazy tylko dlatego, ze w
+    koncu sie pojawil na portalu"), ponowne sprawdzanie nie zmienia tego faktu.
+
+    Wolaj PRZED `enrich` w cyklu cron (run -> recheck -> enrich -> score ->
+    export), zeby przekwalifikowane leady zostaly przetworzone w tym samym przebiegu."""
+    days = cfg["portal_check"].get("recheck_after_days", 14)
+    conn = db.connect(ROOT / cfg["paths"]["db_path"])
+    cur = conn.execute(
+        """SELECT id_sprawy FROM leads
+           WHERE status = 'scored'
+             AND (on_portal_found IS NULL OR on_portal_found = 0)
+             AND (on_portal_checked_at IS NULL
+                  OR julianday('now') - julianday(on_portal_checked_at) >= ?)""",
+        (days,),
+    )
+    ids = [row[0] for row in cur.fetchall()]
+    for id_sprawy in ids:
+        conn.execute("UPDATE leads SET status = 'new' WHERE id_sprawy = ?", (id_sprawy,))
+    conn.commit()
+    conn.close()
+    log.info("Recheck: %d leadow cofnietych do 'new' (starsze niz %d dni od ostatniego sprawdzenia)", len(ids), days)
+    return len(ids)
 
 
 def step_score(cfg: dict) -> None:
@@ -251,6 +341,13 @@ def step_score(cfg: dict) -> None:
         # (pd.NA zamiast nan rzucilby wyjatkiem), wiec robimy to jawnie.
         raw_portal_found = lead.get("on_portal_found")
         lead["on_portal_found"] = None if pd.isna(raw_portal_found) else bool(raw_portal_found)
+        try:
+            vj = json.loads(lead.get("verify_json") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            vj = {}
+        lead["lead_verdict"] = vj.get("lead_verdict")
+        lead["investor_serial_count"] = vj.get("investor_serial_count") or 0
+        lead["parcel_owner_group"] = vj.get("parcel_owner_group")
         score = scoring.compute_score(lead, cfg)
         db.update_status(conn, lead["id_sprawy"], status="scored", score=score)
     conn.close()
@@ -292,7 +389,7 @@ def step_export(cfg: dict) -> None:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     parser = argparse.ArgumentParser(description="Dev Scout pipeline")
-    parser.add_argument("command", choices=["run", "enrich", "score", "export"])
+    parser.add_argument("command", choices=["run", "recheck", "enrich", "score", "export"])
     parser.add_argument("--skip-fetch", action="store_true")
     args = parser.parse_args()
 
@@ -302,6 +399,8 @@ def main() -> None:
         csv_path = step_fetch(cfg, args.skip_fetch)
         filtered_df = step_parse_and_filter(cfg, csv_path)
         step_store(cfg, filtered_df)
+    elif args.command == "recheck":
+        step_recheck(cfg)
     elif args.command == "enrich":
         step_enrich(cfg)
     elif args.command == "score":
