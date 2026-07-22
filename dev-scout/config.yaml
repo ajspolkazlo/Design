@@ -147,8 +147,19 @@ scale_filter:
   # gdy liczby nie da się wyciągnąć z opisu, NIE odrzucamy (lepiej przepuścić niż zgubić leada)
 
 portal_check:
+  # NAJWAŻNIEJSZY backend: Search API (Brave Search). Jedno zapytanie z
+  # filtrem site: pokrywa WSZYSTKIE portale naraz — wliczając Otodom, którego
+  # żaden inny backend tu nie obsłuży bezpiecznie. Włącza się samym ustawieniem
+  # zmiennej środowiskowej BRAVE_SEARCH_API_KEY (jak CEIDG_API_TOKEN) — zero
+  # zmian w kodzie. Rejestracja: https://api-dashboard.search.brave.com
+  # (plan z darmowymi kredytami co miesiąc, bez wymogu polskiej tożsamości —
+  # dużo mniejsze tarcie niż CEIDG). Zweryfikowane na żywo (WebSearch, ręcznie):
+  # trafnie znajduje realne oferty, poprawnie nie znajduje nic dla
+  # nieistniejących adresów. Patrz src/portal_check.py po pełny opis.
+
   # Portale sprawdzane backendem HTTP (dziś realnie tylko OLX — jego endpoint
   # /api/v1/offers jest dozwolony w robots.txt i zweryfikowany na żywo).
+  # Sprawdzany ZAWSZE, niezależnie od klucza search API (darmowy, redundancja).
   portale:
     - olx
 

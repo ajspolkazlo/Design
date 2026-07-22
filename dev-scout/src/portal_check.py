@@ -7,11 +7,24 @@ Lead, ktory dzis jest "czysty", moze pojawic sie na portalu za kilka tygodni —
 to okno czasu jest dokladnie tym, co ma dawac przewage. Re-checkuj leady
 co `portal_check.recheck_after_days` (patrz config.yaml), nie tylko raz.
 
-================================ DWA BACKENDY ================================
+============================== TRZY BACKENDY ==============================
+0) BACKEND SEARCH API (Brave Search) — PRIORYTETOWY, gdy jest klucz.
+   Jedno zapytanie z filtrem site:otodom.pl OR site:olx.pl OR ... pokrywa
+   WSZYSTKIE portale naraz, wlacznie z Otodom, ktorego zaden inny backend
+   tu nie obsluzy bez ryzyka. To oficjalne, platne API wyszukiwarki (nie
+   scraping, nie omijanie blokad) — Brave indeksuje strony portali samo,
+   my tylko pytamy o wynik. ZWERYFIKOWANE NA ZYWO (przez WebSearch, manualnie):
+   zapytanie '"Kozacka" "Marki" (site:otodom.pl OR site:rynekpierwotny.pl OR ...)'
+   trafnie znalazlo realne oferty na Otodom i RynekPierwotny; zapytanie z
+   nieistniejacym adresem poprawnie nie znalazlo nic. Wymaga klucza API
+   (zmienna BRAVE_SEARCH_API_KEY) — patrz docstring _check_via_search_api.
+
 1) BACKEND HTTP (requests) — dziala z kazdego IP, ale tylko dla portali, ktore
    nie blokuja prostego klienta HTTP. Dzis to praktycznie tylko OLX (jego
    wewnetrzny endpoint /api/v1/offers jest jawnie dozwolony w robots.txt i
-   zwraca JSON — ZWERYFIKOWANE na zywo, dziala i trafnie).
+   zwraca JSON — ZWERYFIKOWANE na zywo, dziala i trafnie). Uruchamiany ZAWSZE
+   jako darmowa, natychmiastowa weryfikacja dodatkowa — niezaleznie od tego,
+   czy backend search API jest skonfigurowany.
 
 2) BACKEND BROWSER (Playwright, prawdziwy Chromium) — dla portali, ktore
    blokuja goly HTTP (Otodom = ochrona CDN/CloudFront) albo renderuja wyniki
@@ -43,6 +56,14 @@ co `portal_check.recheck_after_days` (patrz config.yaml), nie tylko raz.
    przy pierwszym uruchomieniu z maszyny Adama trzeba potwierdzic, ze szablony
    URL wyszukiwania (search_url_templates w config.yaml) sa aktualne.
 
+   Gdy backend search API jest skonfigurowany (ma klucz), backend browser jest
+   POMIJANY — search API pokrywa te same portale szybciej, taniej (bez
+   utrzymywania Chromium) i bez ryzyka ToS. Browser zostaje jako fallback na
+   wypadek braku klucza.
+
+KOLEJNOSC PROBOWANIA: search API (jesli klucz) -> zawsze OLX http (za darmo) ->
+browser (tylko gdy brak klucza search API i enable_browser=true).
+
 WAZNE o jakosci sygnalu (patrz tez CLAUDE.md):
   NIE dopasowuj po samej nazwie firmy — deweloper sprzedaje pod nazwa
   PROJEKTU/osiedla, nie nazwa spolki. Sygnal = ulica + miejscowosc z RWDZ.
@@ -66,10 +87,25 @@ import requests
 log = logging.getLogger(__name__)
 
 REQUEST_DELAY_SECONDS = 1.5  # bufor miedzy zapytaniami do jednego portalu
+SEARCH_API_DELAY_SECONDS = 1.0  # Brave: limit 50 zapytan/s, ale budzet to koszt/miesiac, nie predkosc
 BROWSER_DELAY_SECONDS = 3.0  # wolniej dla przegladarki — mniejszy slad, mniej ryzyka bana
 
 OLX_OFFERS_URL = "https://www.olx.pl/api/v1/offers/"
 _STOPWORD_TOKENS = {"ul", "ul.", "al", "al.", "os", "os.", "pl", "pl."}
+
+BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
+BRAVE_API_KEY_ENV_VAR = "BRAVE_SEARCH_API_KEY"
+
+# Domena portalu -> jego klucz w config.yaml (portal_check.portale/browser_portals).
+# Uzywane do rozpoznania, KTORY portal odpowiada danemu URL-owi w wynikach search API.
+_PORTAL_DOMAINS = {
+    "otodom": "otodom.pl",
+    "olx": "olx.pl",
+    "rynekpierwotny": "rynekpierwotny.pl",
+    "morizon": "morizon.pl",
+    "gratka": "gratka.pl",
+    "domiporta": "domiporta.pl",
+}
 
 # Domyslne szablony URL wyszukiwania dla backendu browser. {query} zostanie
 # podmienione na URL-encoded "ulica, miejscowosc". Nadpisywalne w config.yaml
@@ -110,6 +146,57 @@ def _query_tokens(query: str) -> list[str]:
 def _text_matches_all_tokens(haystack: str, tokens: list[str]) -> bool:
     h = _norm(haystack)
     return all(_norm(t) in h for t in tokens)
+
+
+# --------------------------- BACKEND SEARCH API ---------------------------
+
+def _portal_for_url(url: str) -> str | None:
+    host = urllib.parse.urlparse(url).netloc.lower()
+    for portal, domain in _PORTAL_DOMAINS.items():
+        if host == domain or host.endswith("." + domain):
+            return portal
+    return None
+
+
+def _check_via_search_api(query: str, portals: list[str], api_key: str) -> list[str]:
+    """Jedno zapytanie do Brave Search API (oficjalne, platne API wyszukiwarki —
+    NIE scraping) z filtrem site: pokrywa WSZYSTKIE portale naraz, wlacznie z
+    Otodom. Endpoint i format zweryfikowane na zywo:
+      GET https://api.search.brave.com/res/v1/web/search
+      naglowek: X-Subscription-Token: <klucz>
+    Rejestracja klucza: https://api-dashboard.search.brave.com (plan z
+    darmowymi kredytami co miesiac — patrz README). Zwraca liste portali,
+    na ktorych ZNALEZIONO oferte pasujaca do WSZYSTKICH tokenow adresu
+    (odporne na falszywe trafienia z luznego dopasowania wyszukiwarki)."""
+    tokens = _query_tokens(query)
+    if len(tokens) < 2:
+        return []
+
+    site_filter = " OR ".join(f"site:{_PORTAL_DOMAINS[p]}" for p in portals if p in _PORTAL_DOMAINS)
+    if not site_filter:
+        return []
+    phrase = " ".join(f'"{t}"' for t in tokens)
+    q = f"{phrase} ({site_filter})"
+
+    resp = requests.get(
+        BRAVE_SEARCH_URL,
+        params={"q": q, "count": 20},
+        headers={"Accept": "application/json", "X-Subscription-Token": api_key},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    results = resp.json().get("web", {}).get("results", [])
+
+    found: set[str] = set()
+    for r in results:
+        url = r.get("url", "")
+        blob = f"{r.get('title', '')} {r.get('description', '')} {url}"
+        if not _text_matches_all_tokens(blob, tokens):
+            continue
+        portal = _portal_for_url(url)
+        if portal:
+            found.add(portal)
+    return sorted(found)
 
 
 # ----------------------------- BACKEND HTTP -----------------------------
@@ -241,27 +328,39 @@ def check_portals(query: str, portal_cfg: dict) -> PortalPresence:
     """query = najlepiej 'ulica, miejscowosc' (patrz docstring modulu).
     portal_cfg = caly slownik cfg['portal_check'].
 
-    Portale z listy `portale` sprawdzane sa backendem HTTP. Portale z listy
-    `browser_portals` — backendem browser, ale tylko gdy enable_browser=true.
-    Kazdy checker jest w try/except: awaria jednego portalu nie blokuje reszty."""
+    Kolejnosc backendow (patrz docstring modulu): search API (jesli jest
+    klucz) -> zawsze OLX http (za darmo, niezaleznie od search API) ->
+    browser (tylko gdy BRAK klucza search API i enable_browser=true). Kazdy
+    checker jest w try/except: awaria jednego backendu/portalu nie blokuje
+    reszty."""
     http_portals = portal_cfg.get("portale", [])
-    browser_portals = portal_cfg.get("browser_portals", []) if portal_cfg.get("enable_browser") else []
+    all_wanted_portals = list(dict.fromkeys(http_portals + portal_cfg.get("browser_portals", [])))
 
     found: list[str] = []
 
-    for portal in http_portals:
-        if portal != "olx":
-            # dzis tylko OLX ma dzialajacy, przetestowany backend HTTP; inne
-            # portale przez HTTP zwracalyby falszywa pewnosc (patrz docstring)
-            continue
+    api_key = os.environ.get(BRAVE_API_KEY_ENV_VAR)
+    if api_key and all_wanted_portals:
+        try:
+            found.extend(_check_via_search_api(query, all_wanted_portals, api_key))
+        except Exception:
+            log.warning("Search API check nie powiodl sie dla %r", query, exc_info=True)
+        time.sleep(SEARCH_API_DELAY_SECONDS)
+
+    if "olx" in http_portals and "olx" not in found:
         try:
             if _check_olx(query):
-                found.append(portal)
+                found.append("olx")
         except Exception:
-            log.warning("HTTP check %s nie powiodl sie dla %r", portal, query, exc_info=True)
+            log.warning("HTTP check olx nie powiodl sie dla %r", query, exc_info=True)
         time.sleep(REQUEST_DELAY_SECONDS)
 
+    # browser tylko jako fallback bez klucza search API — z kluczem search API
+    # i tak pokrywa te same portale, wiec uruchamianie Chromium bylo by
+    # zbedne (patrz docstring modulu)
+    browser_portals = portal_cfg.get("browser_portals", []) if (portal_cfg.get("enable_browser") and not api_key) else []
     for portal in browser_portals:
+        if portal in found:
+            continue
         try:
             if _check_via_browser(portal, query, portal_cfg):
                 found.append(portal)
