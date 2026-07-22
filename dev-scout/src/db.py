@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS leads (
     on_portal_found INTEGER,
     on_portal_json TEXT,
     on_portal_checked_at TEXT,
+    verify_json TEXT,
     score INTEGER,
     status TEXT DEFAULT 'new',       -- new -> enriched -> scored -> exported
     first_seen TEXT DEFAULT (datetime('now')),
@@ -37,11 +38,23 @@ CREATE TABLE IF NOT EXISTS leads (
 );
 """
 
+# Kolumny dodane po pierwszych produkcyjnych bazach — CREATE TABLE IF NOT EXISTS
+# nie zmienia istniejacych tabel, wiec doszywamy je ALTER-em przy kazdym connect
+# (idempotentnie: "duplicate column name" ignorujemy).
+_MIGRATIONS = [
+    "ALTER TABLE leads ADD COLUMN verify_json TEXT",
+]
+
 
 def connect(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.executescript(SCHEMA)
+    for migration in _MIGRATIONS:
+        try:
+            conn.execute(migration)
+        except sqlite3.OperationalError:
+            pass  # kolumna juz istnieje
     return conn
 
 

@@ -272,6 +272,10 @@ def _matches_investor(text: str, investor_core: str | None) -> bool:
 class _Match:
     url: str
     investor_confirmed: bool = False
+    # surowa oferta OLX z /api/v1/offers (params, map, created_time, business) —
+    # przechwycona W MOMENCIE dopasowania, zeby weryfikacja (src/verify.py) nie
+    # musiala niczego pobierac ponownie. Dla innych backendow None.
+    olx_offer: dict | None = None
 
 
 # --------------------------- BACKEND SEARCH API ---------------------------
@@ -376,7 +380,11 @@ def _check_olx(query: str, expected_type: str | None = None, investor_core: str 
         title = offer.get("title", "")
         blob = f"{title} {offer.get('description', '')} {offer.get('url', '')}"
         if _text_matches_all_tokens(blob, tokens) and _matches_property_type(title, blob, expected_type):
-            return _Match(url=offer.get("url"), investor_confirmed=_matches_investor(blob, investor_core))
+            return _Match(
+                url=offer.get("url"),
+                investor_confirmed=_matches_investor(blob, investor_core),
+                olx_offer={k: offer.get(k) for k in ("params", "map", "created_time", "business")},
+            )
     return None
 
 
@@ -494,7 +502,7 @@ def close_browser() -> None:
 
 def check_portals(
     query: str, portal_cfg: dict, property_type: str | None = None, investor_name: str | None = None
-) -> PortalPresence:
+) -> tuple[PortalPresence, dict[str, _Match]]:
     """query = najlepiej 'ulica, miejscowosc' (patrz docstring modulu).
     portal_cfg = caly slownik cfg['portal_check'].
     property_type = "dom" albo "mieszkanie" (patrz expected_property_type) —
@@ -561,10 +569,13 @@ def check_portals(
         time.sleep(BROWSER_DELAY_SECONDS)
 
     confirmed_by_investor = sorted(p for p, m in matches.items() if m.investor_confirmed)
-    return PortalPresence(
+    presence = PortalPresence(
         found_on=sorted(matches.keys()),
         matches={p: m.url for p, m in matches.items()},
         confirmed_by_investor=confirmed_by_investor,
         confidence="high" if confirmed_by_investor else "low",
         checked_at=datetime.now(timezone.utc).isoformat(),
     )
+    # surowe _Match (z olx_offer itd.) — dla weryfikacji w src/verify.py;
+    # celowo POZA PortalPresence, zeby presence.__dict__ zostal JSON-serializowalny
+    return presence, matches

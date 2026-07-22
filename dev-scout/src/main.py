@@ -21,7 +21,7 @@ from pathlib import Path
 import pandas as pd
 import yaml
 
-from src import cadastral, company_lookup, db, geocode, portal_check, rwdz_fetch, rwdz_parse, scoring
+from src import cadastral, company_lookup, db, geocode, portal_check, rwdz_fetch, rwdz_parse, scoring, verify
 from src.filters import apply_filters
 
 log = logging.getLogger("dev_scout")
@@ -56,6 +56,12 @@ def step_parse_and_filter(cfg: dict, csv_path: Path) -> pd.DataFrame:
     log.info("Wczytano %d wierszy z %s", len(raw_df), csv_path.name)
 
     normalized_df = rwdz_parse.normalize_dataframe(raw_df)
+
+    # Liczniki seryjnosci inwestora na PELNYM (nieodfiltrowanym) zbiorze —
+    # "ile wnioskow ma ten inwestor w calym wojewodztwie" to odcisk palca
+    # dewelopera (patrz verify.py), liczony tu, bo tylko tu mamy caly zbior.
+    verify.build_investor_counts(raw_df, (ROOT / cfg["paths"]["db_path"]).parent)
+
     filtered_df = apply_filters(normalized_df, cfg)
     log.info("Po filtrach zostalo %d wierszy", len(filtered_df))
     return filtered_df
@@ -137,7 +143,17 @@ def step_enrich(cfg: dict) -> None:
             except Exception:
                 log.exception("Odwrotne geokodowanie nie powiodlo sie dla %s", lead["id_sprawy"])
 
+        # Dane dzialki z ewidencji gruntow (urzedowa powierzchnia + KATEGORIA
+        # wlasciciela: osoba fizyczna vs spolka) i seryjnosc inwestora w RWDZ —
+        # sygnaly przydatne NIEZALEZNIE od portali (dzialaja tez dla ~88%
+        # leadow bez nazwy inwestora). Patrz src/verify.py.
+        verify_cfg = {**verify.DEFAULTS, **(cfg.get("verify") or {})}
+        data_dir = (ROOT / cfg["paths"]["db_path"]).parent
+        parcel_info = verify.parcel_official(parcel_id) if parcel_id else {}
+        serial_count = verify.investor_serial_count(lead["inwestor"], data_dir)
+
         on_portal_found, on_portal_json, on_portal_checked_at = None, None, None
+        match_verdicts: list[verify.MatchVerdict] = []
         if query_ulica:
             # Sprawdzamy portale TYLKO gdy mamy (realna albo odzyskana z ULDK)
             # ulice. Bez niej zostaje sama miejscowosc — a "brak trafien dla
@@ -149,12 +165,51 @@ def step_enrich(cfg: dict) -> None:
             try:
                 query = f"{query_ulica}, {lead['miejscowosc']}"
                 property_type = portal_check.expected_property_type(lead["kategoria_obiektu"])
-                presence = portal_check.check_portals(query, cfg["portal_check"], property_type, lead["inwestor"])
-                on_portal_found = int(presence.is_present_anywhere)
+                presence, raw_matches = portal_check.check_portals(
+                    query, cfg["portal_check"], property_type, lead["inwestor"])
+
+                # ---- weryfikacja kazdego dopasowania (patrz verify.py) ----
+                raw = json.loads(lead["raw_json"] or "{}")
+                lead_ctx = {
+                    "kubatura": raw.get("kubatura"),
+                    "data_wniosku": lead["data"],
+                    "lat": lat, "lon": lon,
+                }
+                for portal_name, m in raw_matches.items():
+                    lead_ctx["investor_confirmed"] = m.investor_confirmed
+                    if portal_name == "otodom":
+                        facts = verify.fetch_otodom_facts(m.url)
+                    elif portal_name == "olx" and m.olx_offer:
+                        facts = verify.olx_facts_from_offer(m.olx_offer)
+                    else:
+                        facts = verify.fetch_html_facts(m.url)
+                    match_verdicts.append(
+                        verify.judge_match(portal_name, m.url, facts, lead_ctx, parcel_info, verify_cfg))
+
+                # Dopasowania REJECTED (rynek wtorny, pin >2 km itd.) NIE licza
+                # sie jako "inwestycja jest na portalu" — to ogloszenia INNYCH
+                # nieruchomosci przy tej samej ulicy (zweryfikowane na zywo:
+                # Kobylka = odsprzedaz z 2020, Brwinow = inwestycja 1.8 km dalej).
+                accepted = [v for v in match_verdicts if v.verdict != "REJECTED"]
+                on_portal_found = int(bool(accepted))
                 on_portal_json = json.dumps(presence.__dict__, ensure_ascii=False)
                 on_portal_checked_at = presence.checked_at
             except Exception:
                 log.exception("Nie udalo sie sprawdzic portali dla %s", lead["id_sprawy"])
+
+        verify_payload = {
+            "parcel_id": parcel_id,
+            "parcel_area_m2": parcel_info.get("area_m2"),
+            "parcel_owner_group": parcel_info.get("owner_group"),
+            "parcel_owner_desc": parcel_info.get("owner_desc"),
+            "investor_serial_count": serial_count,
+            "lead_verdict": verify.best_verdict(match_verdicts),
+            "matches": [
+                {"portal": v.portal, "url": v.url, "verdict": v.verdict,
+                 "reasons": v.reasons, "facts": v.facts}
+                for v in match_verdicts
+            ],
+        }
 
         distance_km = None
         if lat is not None and lon is not None:
@@ -167,6 +222,7 @@ def step_enrich(cfg: dict) -> None:
             on_portal_found=on_portal_found,
             on_portal_json=on_portal_json,
             on_portal_checked_at=on_portal_checked_at,
+            verify_json=json.dumps(verify_payload, ensure_ascii=False),
             distance_km=distance_km,
         )
     portal_check.close_browser()  # zamknij Chromium jesli backend browser byl uzyty

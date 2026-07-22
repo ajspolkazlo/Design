@@ -1,0 +1,338 @@
+# -*- coding: utf-8 -*-
+"""
+Generator raportu Excel dla Dev Scout — na stale w repo (czesc pipeline'u,
+nie jednorazowy skrypt).
+
+Uzycie:
+    python tools/report_xlsx.py [sciezka_wyjsciowa.xlsx] [--status scored]
+
+Arkusze:
+  1. Dashboard — KPI + wykresy (werdykty, portale, gminy, wlasciciele dzialek)
+  2. Leady     — pelna tabela z autofiltrem, werdyktem i POWODAMI werdyktu,
+                 klikalnymi linkami do ogloszen, kolorowaniem po werdykcie
+  3. Legenda   — metodologia, definicje, znane ograniczenia
+
+Zrodlem jest baza SQLite (nie CSV) — raport siega po verify_json/on_portal_json,
+ktorych nie ma w uproszczonym eksporcie CSV.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import sys
+from collections import Counter
+from pathlib import Path
+
+import pandas as pd
+import yaml
+from openpyxl import Workbook
+from openpyxl.chart import BarChart, PieChart, Reference
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
+
+ROOT = Path(__file__).parent.parent
+FONT = "Calibri"
+
+# ---- paleta ----
+C_HEAD = "1F3864"      # granat naglowka
+C_HEAD_TXT = "FFFFFF"
+C_KPI_BG = "EDF2FA"
+C_BORDER = "D6DCE5"
+VERDICT_STYLE = {
+    "CONFIRMED": ("C6EFCE", "006100", "✔ potwierdzone"),
+    "LIKELY":    ("DDEBF7", "1F4E79", "≈ prawdopodobne"),
+    "REVIEW":    ("FFEB9C", "9C6500", "? do przeglądu"),
+    "REJECTED":  ("FFC7CE", "9C0006", "✖ odrzucone"),
+    "CLEAN":     ("E2EFDA", "375623", "— czysty (brak ogłoszeń)"),
+    "UNCHECKED": ("F2F2F2", "7F7F7F", "n/d (nie sprawdzono)"),
+}
+
+
+def load_rows(db_path: Path, status: str) -> pd.DataFrame:
+    conn = sqlite3.connect(db_path)
+    df = pd.read_sql_query(
+        "SELECT * FROM leads WHERE status = ? ORDER BY score DESC", conn, params=(status,))
+    conn.close()
+    return df
+
+
+def lead_verdict_and_reasons(row) -> tuple[str, str, str, str]:
+    """(werdykt, powody, linki_tekst, pierwszy_url). Werdykt leada:
+    - najlepszy werdykt dopasowan z verify_json, jesli byly dopasowania
+    - CLEAN gdy sprawdzono i nic nie znaleziono
+    - UNCHECKED gdy nie bylo jak sprawdzic (brak ulicy)"""
+    try:
+        vj = json.loads(row.get("verify_json") or "{}")
+    except (TypeError, ValueError):
+        vj = {}
+    matches = vj.get("matches") or []
+    checked = not pd.isna(row.get("on_portal_found"))
+
+    if not matches:
+        if checked:
+            return "CLEAN", "sprawdzono 6 portali — zero dopasowań dla tej lokalizacji", "", ""
+        return "UNCHECKED", "brak ulicy w RWDZ i nie dało się jej odzyskać z działki — portali nie sprawdzano", "", ""
+
+    order = ["CONFIRMED", "LIKELY", "REVIEW", "REJECTED"]
+    best = min((m["verdict"] for m in matches), key=order.index)
+    lines, links = [], []
+    for m in sorted(matches, key=lambda m: order.index(m["verdict"])):
+        reasons = "; ".join(m.get("reasons") or ["(bez powodów)"])
+        lines.append(f"[{m['portal']} → {m['verdict']}] {reasons}")
+        if m["verdict"] != "REJECTED":
+            links.append(m["url"])
+    first_url = links[0] if links else (matches[0]["url"] if matches else "")
+    return best, "\n".join(lines), "\n".join(links), first_url
+
+
+def parcel_summary(row) -> tuple[str, str, int | None]:
+    try:
+        vj = json.loads(row.get("verify_json") or "{}")
+    except (TypeError, ValueError):
+        vj = {}
+    owner = vj.get("parcel_owner_desc") or "b/d"
+    area = vj.get("parcel_area_m2")
+    area_txt = f"{area} m²" if area else "b/d"
+    serial = vj.get("investor_serial_count")
+    return owner, area_txt, serial
+
+
+def build(out_path: Path, status: str = "scored") -> None:
+    cfg = yaml.safe_load(open(ROOT / "config.yaml", encoding="utf-8"))
+    df = load_rows(ROOT / cfg["paths"]["db_path"], status)
+    if df.empty:
+        raise SystemExit(f"Brak leadow o statusie {status!r} w bazie")
+
+    rows = []
+    for _, r in df.iterrows():
+        verdict, reasons, links, first_url = lead_verdict_and_reasons(r)
+        owner, parcel_area, serial = parcel_summary(r)
+        inwestor = r["inwestor"] if pd.notna(r["inwestor"]) else "(brak w RWDZ)"
+        serial_txt = ""
+        if serial and serial >= 2:
+            serial_txt = f"{serial} wniosków w RWDZ (seryjny)" if serial >= 3 else f"{serial} wnioski w RWDZ"
+        elif pd.notna(r["inwestor"]):
+            serial_txt = "1 wniosek"
+        rows.append({
+            "Score": int(r["score"]) if pd.notna(r["score"]) else None,
+            "Werdykt": verdict,
+            "Data zgłoszenia": str(r["data"])[:10] if pd.notna(r["data"]) else "",
+            "Gmina": r["gmina"] if pd.notna(r["gmina"]) else "",
+            "Miejscowość": r["miejscowosc"] if pd.notna(r["miejscowosc"]) else "",
+            "Ulica": r["ulica"] if pd.notna(r["ulica"]) else "",
+            "Rodzaj inwestycji": r["kategoria_obiektu"] if pd.notna(r["kategoria_obiektu"]) else "",
+            "Inwestor": inwestor,
+            "Seryjność inwestora": serial_txt,
+            "Właściciel działki (ewidencja)": owner,
+            "Pow. działki (ewidencja)": parcel_area,
+            "Uzasadnienie werdyktu": reasons,
+            "Linki do ogłoszeń": links,
+            "Odległość (km)": round(r["distance_km"], 1) if pd.notna(r["distance_km"]) else None,
+            "Nr sprawy (GUNB)": r["id_sprawy"],
+            "_first_url": first_url,
+        })
+    data = pd.DataFrame(rows)
+
+    wb = Workbook()
+
+    # ============================ DASHBOARD ============================
+    ds = wb.active
+    ds.title = "Dashboard"
+    ds.sheet_view.showGridLines = False
+
+    ds["B2"] = "DEV SCOUT — panel wyników"
+    ds["B2"].font = Font(name=FONT, bold=True, size=18, color=C_HEAD)
+    ds["B3"] = f"Próbka: {len(data)} leadów z 2026 · wygenerowano automatycznie z bazy (status={status})"
+    ds["B3"].font = Font(name=FONT, size=10, color="808080")
+
+    # --- KPI ---
+    verdict_counts = Counter(data["Werdykt"])
+    kpis = [
+        ("LEADY W PRÓBCE", len(data), C_HEAD),
+        ("POTWIERDZONE NA PORTALU", verdict_counts.get("CONFIRMED", 0), "006100"),
+        ("CZYSTE (przewaga!)", verdict_counts.get("CLEAN", 0), "375623"),
+        ("DO PRZEGLĄDU", verdict_counts.get("REVIEW", 0), "9C6500"),
+        ("ODRZUCONE DOPASOWANIA", verdict_counts.get("REJECTED", 0), "9C0006"),
+    ]
+    col = 2
+    for label, value, color in kpis:
+        c1 = ds.cell(row=5, column=col, value=value)
+        c1.font = Font(name=FONT, bold=True, size=26, color=color)
+        c1.alignment = Alignment(horizontal="center")
+        c2 = ds.cell(row=6, column=col, value=label)
+        c2.font = Font(name=FONT, size=9, color="595959")
+        c2.alignment = Alignment(horizontal="center", wrap_text=True)
+        for rr in (5, 6):
+            ds.cell(row=rr, column=col).fill = PatternFill("solid", fgColor=C_KPI_BG)
+        ds.column_dimensions[get_column_letter(col)].width = 22
+        col += 2
+    ds.row_dimensions[5].height = 34
+
+    # --- dane pod wykresy (w ukrytych kolumnach na koncu) ---
+    anchor_col = 30  # kolumna AD i dalej — poza widokiem
+    def _write_series(start_row: int, title: str, counter: Counter) -> tuple[int, int]:
+        ds.cell(row=start_row, column=anchor_col, value=title)
+        i = start_row + 1
+        for k, v in counter.most_common():
+            ds.cell(row=i, column=anchor_col, value=str(k))
+            ds.cell(row=i, column=anchor_col + 1, value=v)
+            i += 1
+        return start_row + 1, i - 1
+
+    v_start, v_end = _write_series(2, "Werdykty", Counter(
+        VERDICT_STYLE[v][2] for v in data["Werdykt"]))
+    portal_counter = Counter()
+    for links in data["Linki do ogłoszeń"]:
+        for ln in str(links).splitlines():
+            for portal in ("otodom", "olx", "gratka", "morizon", "domiporta", "rynekpierwotny"):
+                if portal in ln:
+                    portal_counter[portal] += 1
+    p_start, p_end = _write_series(12, "Portale", portal_counter or Counter({"(brak)": 0}))
+    g_start, g_end = _write_series(22, "Gminy", Counter(data["Gmina"]))
+    o_start, o_end = _write_series(34, "Właściciel działki", Counter(data["Właściciel działki (ewidencja)"]))
+
+    for cidx in (anchor_col, anchor_col + 1):
+        ds.column_dimensions[get_column_letter(cidx)].hidden = True
+
+    # --- wykresy ---
+    pie = PieChart()
+    pie.title = "Werdykty weryfikacji"
+    pie.height, pie.width = 7.2, 9.5
+    pie.add_data(Reference(ds, min_col=anchor_col + 1, min_row=v_start, max_row=v_end), titles_from_data=False)
+    pie.set_categories(Reference(ds, min_col=anchor_col, min_row=v_start, max_row=v_end))
+    ds.add_chart(pie, "B8")
+
+    bar = BarChart()
+    bar.type = "col"
+    bar.title = "Dopasowania per portal (bez odrzuconych)"
+    bar.height, bar.width = 7.2, 9.5
+    bar.legend = None
+    bar.add_data(Reference(ds, min_col=anchor_col + 1, min_row=p_start, max_row=p_end), titles_from_data=False)
+    bar.set_categories(Reference(ds, min_col=anchor_col, min_row=p_start, max_row=p_end))
+    ds.add_chart(bar, "H8")
+
+    bar2 = BarChart()
+    bar2.type = "bar"
+    bar2.title = "Leady per gmina"
+    bar2.height, bar2.width = 7.2, 9.5
+    bar2.legend = None
+    bar2.add_data(Reference(ds, min_col=anchor_col + 1, min_row=g_start, max_row=g_end), titles_from_data=False)
+    bar2.set_categories(Reference(ds, min_col=anchor_col, min_row=g_start, max_row=g_end))
+    ds.add_chart(bar2, "B24")
+
+    pie2 = PieChart()
+    pie2.title = "Właściciel działki (ewidencja gruntów)"
+    pie2.height, pie2.width = 7.2, 9.5
+    pie2.add_data(Reference(ds, min_col=anchor_col + 1, min_row=o_start, max_row=o_end), titles_from_data=False)
+    pie2.set_categories(Reference(ds, min_col=anchor_col, min_row=o_start, max_row=o_end))
+    ds.add_chart(pie2, "H24")
+
+    ds["B40"] = "Jak czytać: werdykty pochodzą z wielopoziomowej weryfikacji (geometria działki, rynek pierwotny/wtórny,"
+    ds["B41"] = "metraż vs kubatura z wniosku, wiek ogłoszenia, ewidencja gruntów) — szczegóły w arkuszu Legenda."
+    for rr in (40, 41):
+        ds.cell(row=rr, column=2).font = Font(name=FONT, size=9, italic=True, color="808080")
+
+    # ============================ LEADY ============================
+    ws = wb.create_sheet("Leady")
+    headers = [c for c in data.columns if not c.startswith("_")]
+    ws.append(headers)
+
+    thin = Side(style="thin", color=C_BORDER)
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    for i, _ in enumerate(headers, start=1):
+        c = ws.cell(row=1, column=i)
+        c.font = Font(name=FONT, bold=True, size=10, color=C_HEAD_TXT)
+        c.fill = PatternFill("solid", fgColor=C_HEAD)
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        c.border = border
+    ws.row_dimensions[1].height = 30
+    ws.freeze_panes = "C2"
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{len(data) + 1}"
+
+    verdict_col = headers.index("Werdykt") + 1
+    links_col = headers.index("Linki do ogłoszeń") + 1
+
+    for ridx, (_, row) in enumerate(data.iterrows(), start=2):
+        for cidx, h in enumerate(headers, start=1):
+            cell = ws.cell(row=ridx, column=cidx, value=row[h])
+            cell.font = Font(name=FONT, size=10)
+            cell.border = border
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+        # kolorowanie werdyktu (cala komorka + czytelna etykieta)
+        vcell = ws.cell(row=ridx, column=verdict_col)
+        fill, txt_color, label = VERDICT_STYLE.get(row["Werdykt"], ("FFFFFF", "000000", row["Werdykt"]))
+        vcell.value = label
+        vcell.fill = PatternFill("solid", fgColor=fill)
+        vcell.font = Font(name=FONT, size=10, bold=True, color=txt_color)
+        # hiperlacze do pierwszego zaakceptowanego ogloszenia
+        if row["_first_url"]:
+            lcell = ws.cell(row=ridx, column=links_col)
+            lcell.hyperlink = row["_first_url"]
+            lcell.font = Font(name=FONT, size=10, color="0563C1", underline="single")
+
+    widths = {
+        "Score": 7, "Werdykt": 17, "Data zgłoszenia": 11, "Gmina": 14, "Miejscowość": 14,
+        "Ulica": 14, "Rodzaj inwestycji": 34, "Inwestor": 24, "Seryjność inwestora": 15,
+        "Właściciel działki (ewidencja)": 10, "Pow. działki (ewidencja)": 10,
+        "Uzasadnienie werdyktu": 70, "Linki do ogłoszeń": 44,
+        "Odległość (km)": 9, "Nr sprawy (GUNB)": 24,
+    }
+    for i, h in enumerate(headers, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = widths.get(h, 16)
+
+    # ============================ LEGENDA ============================
+    lg = wb.create_sheet("Legenda")
+    lg.sheet_view.showGridLines = False
+    L = [
+        ("Dev Scout — metodologia werdyktów", 14, True),
+        ("", 10, False),
+        ("WERDYKTY (kolumna 'Werdykt' w arkuszu Leady):", 11, True),
+        ("✔ potwierdzone — ogłoszenie tej inwestycji NA PEWNO jest na portalu: pin ogłoszenia w/przy działce", 10, False),
+        ("   z wniosku (≤150 m) + co najmniej jeden sygnał dodatkowy (rynek pierwotny, metraż w widełkach", 10, False),
+        ("   z kubatury, zgodna działka, spójny czas, nazwa inwestora).", 10, False),
+        ("≈ prawdopodobne — mocne poszlaki, ale bez twardego domknięcia geometrycznego.", 10, False),
+        ("? do przeglądu — sygnały sprzeczne albo brak danych strukturalnych ogłoszenia; 5 s ręcznego rzutu okiem.", 10, False),
+        ("✖ odrzucone — znalezione ogłoszenie dotyczy INNEJ nieruchomości (rynek wtórny, pin >2 km,", 10, False),
+        ("   ogłoszenie starsze od wniosku). NIE liczy się jako 'inwestycja jest na portalu'.", 10, False),
+        ("— czysty — sprawdzono 6 portali, zero dopasowań: inwestycja jeszcze nie jest reklamowana = PRZEWAGA.", 10, False),
+        ("n/d — brak ulicy w RWDZ i nie dało się jej odzyskać z numeru działki; portali nie sprawdzano.", 10, False),
+        ("", 10, False),
+        ("SYGNAŁY WERYFIKACJI (wszystkie darmowe, wszystkie z oficjalnych/publicznych źródeł):", 11, True),
+        ("1. Geometria: dokładne współrzędne ogłoszenia (Otodom osadza je w kodzie strony) vs poligon działki", 10, False),
+        ("   ewidencyjnej z państwowego ULDK (GUGiK). Pin ≤150 m = potwierdzenie; >2 km = odrzucenie.", 10, False),
+        ("2. Rynek pierwotny/wtórny — z danych strukturalnych Otodom/OLX. Wtórny = nie nasza nowa inwestycja.", 10, False),
+        ("3. Czas: data utworzenia ogłoszenia vs data wniosku (ogłoszenie starsze o >4 mies. = podejrzane).", 10, False),
+        ("4. Metraż: kubatura z wniosku RWDZ (m³) → widełki powierzchni użytkowej (÷5.5…÷4.0, kalibracja na", 10, False),
+        ("   realnych parach) vs metraż z ogłoszenia.", 10, False),
+        ("5. Ewidencja gruntów (KIEG WMS): urzędowa powierzchnia działki + KATEGORIA właściciela (osoba", 10, False),
+        ("   fizyczna / spółka — bez danych osobowych). Spółka = sygnał dewelopera nawet bez nazwy w RWDZ.", 10, False),
+        ("6. Seryjność: liczba wniosków tego samego inwestora w całym mazowieckim RWDZ (lokalny zrzut).", 10, False),
+        ("   ≥3 wnioski = seryjny inwestor (deweloper). Np. 'M4 Sp. z o.o.': 31 wniosków.", 10, False),
+        ("", 10, False),
+        ("ZNANE OGRANICZENIA:", 11, True),
+        ("• Gratka/Morizon/Domiporta nie publikują dokładnych współrzędnych w HTML — dla nich metraż/działka", 10, False),
+        ("  z regexów (niższa pewność) i werdykt częściej 'do przeglądu'.", 10, False),
+        ("• OLX celowo rozmywa pin do ~1 km — używany tylko wspierająco, nigdy do odrzucenia.", 10, False),
+        ("• Kubatura bywa podana dla CAŁEGO zamierzenia (kilka budynków) — widełki wtedy zawyżone;", 10, False),
+        ("  umiarkowane rozjazdy metrażu celowo nie karzą werdyktu.", 10, False),
+        ("• 'czysty' oznacza stan NA DZIŚ — re-check co recheck_after_days (config) wyłapie późniejsze oferty.", 10, False),
+    ]
+    for i, (text, size, bold) in enumerate(L, start=2):
+        c = lg.cell(row=i, column=2, value=text)
+        c.font = Font(name=FONT, size=size, bold=bold, color=C_HEAD if bold else "333333")
+    lg.column_dimensions["B"].width = 110
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(out_path)
+    print(f"zapisano: {out_path} ({len(data)} leadow)")
+
+
+if __name__ == "__main__":
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    status = "scored"
+    for a in sys.argv[1:]:
+        if a.startswith("--status="):
+            status = a.split("=", 1)[1]
+    out = Path(args[0]) if args else ROOT / "output" / "dev_scout_raport.xlsx"
+    build(out, status)

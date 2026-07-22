@@ -195,6 +195,19 @@ portal_check:
 
   recheck_after_days: 14  # co ile dni ponownie sprawdzać tego samego leada
 
+verify:
+  # Weryfikacja dopasowania lead<->ogłoszenie (src/verify.py). Sygnały:
+  # geometria (pin ogłoszenia vs poligon działki z ULDK), rynek pierwotny/wtórny,
+  # data ogłoszenia vs data wniosku, metraż vs kubatura, działka vs ewidencja
+  # gruntów, kategoria właściciela działki (KIEG WMS), seryjność inwestora w RWDZ.
+  confirm_distance_m: 150     # pin ogłoszenia ≤ tego = potwierdzenie geograficzne
+  likely_distance_m: 700      # do tego progu = sąsiedztwo / rozmycie pinu
+  reject_distance_m: 2000     # dalej = inna lokalizacja, dopasowanie odrzucone
+  kubatura_div_lo: 4.0        # widełki metrażu: kubatura/5.5 … kubatura/4.0
+  kubatura_div_hi: 5.5        # (kalibracja na realnych parach oferta<->wniosek, 07.2026)
+  listing_age_tolerance_days: 120  # ogłoszenie starsze od wniosku o więcej -> podejrzane
+  serial_investor_min: 3      # tyle wniosków w RWDZ = "seryjny inwestor" (deweloper)
+
 scoring:
   # scoring 0-100 zamiast twardego filtra — sortujemy, nie odrzucamy agresywnie
   weights:
