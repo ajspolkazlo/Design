@@ -149,6 +149,71 @@ def _text_matches_all_tokens(haystack: str, tokens: list[str]) -> bool:
     return all(_norm(t) in h for t in tokens)
 
 
+# Wzorce URL rozrozniajace KONKRETNE OGLOSZENIE od strony wynikow/kategorii —
+# zweryfikowane na realnych URL-ach z tego pliku (patrz commit). Bez tego
+# wyszukiwarka (Brave) czasem indeksuje strone kategorii portalu (np.
+# "gratka.pl/nieruchomosci/mieszkania/karczew/ul-lesna/sprzedaz" — lista
+# WSZYSTKICH mieszkan na tej ulicy) jako "trafienie", co wyglada jak konkretna
+# oferta, a jest tylko strona wyszukiwania.
+_LISTING_URL_PATTERNS = {
+    "otodom": re.compile(r"/oferta/"),
+    "olx": re.compile(r"/d/oferta/"),
+    "rynekpierwotny": re.compile(r"/oferty/"),
+    "morizon": re.compile(r"/oferta/"),
+    "gratka": re.compile(r"/ob/\d+"),
+    "domiporta": re.compile(r"/\d{6,}/?$"),
+}
+
+
+def _is_individual_listing(portal: str, url: str) -> bool:
+    pattern = _LISTING_URL_PATTERNS.get(portal)
+    if pattern is None:
+        return True  # nieznany portal — nie odrzucaj na tej podstawie
+    return bool(pattern.search(urllib.parse.urlparse(url).path))
+
+
+# Typ nieruchomosci: dla zabudowy jednorodzinnej (szeregowa/blizniacza/
+# wolnostojaca) szukamy DOMU, nie mieszkania — Gratka/Domiporta/Morizon maja
+# osobne kategorie "dom" i "mieszkanie", a dopasowanie samej ulicy+miejscowosci
+# bez tego rozroznienia lapalo np. kategorie "mieszkania" dla leada opisujacego
+# budowe domu. Dla zabudowy wielorodzinnej (budynek z wieloma mieszkaniami)
+# odwrotnie — szukamy mieszkania, bo to indywidualne lokale sa wystawiane.
+_HOUSE_TYPE_WORDS = ["dom", "domek", "blizniak", "szeregowiec", "segment", "willa"]
+_APARTMENT_TYPE_WORDS = ["mieszkanie", "kawalerka", "apartament"]
+
+
+def expected_property_type(kategoria_obiektu: str | None) -> str:
+    v = _norm(kategoria_obiektu or "")
+    return "mieszkanie" if "wielorodzinn" in v else "dom"
+
+
+def _has_type_word(text: str, words: list[str]) -> bool:
+    v = _norm(text)
+    return any(re.search(rf"\b{w}", v) for w in words)
+
+
+def _matches_property_type(title: str, blob: str, expected_type: str | None) -> bool:
+    """Gdy expected_type jest None (nie znamy typu zabudowy), nie odrzucamy —
+    lepiej przepuscic niz zgubic trafienie z powodu brakujacej informacji.
+
+    Sprawdzamy TYTUL jako pierwszy, autorytatywny sygnal — dopiero gdy tytul
+    nie wspomina zadnego typu (niejednoznaczny), spadamy do calego blobu
+    (tytul+opis+url). Zweryfikowane na zywo, ze samo sprawdzanie calego blobu
+    nie wystarczy: ogolny opis SEO strony Otodom ("mieszkania, domy, dzialki,
+    lokale uzytkowe...") wymienia WSZYSTKIE kategorie portalu jako tekst
+    nawigacyjny i falszywie pasowalby do kazdego expected_type, mimo ze tytul
+    tej samej oferty jednoznacznie mowil "mieszkanie na sprzedaz"."""
+    if not expected_type:
+        return True
+    house_in_title = _has_type_word(title, _HOUSE_TYPE_WORDS)
+    apartment_in_title = _has_type_word(title, _APARTMENT_TYPE_WORDS)
+    if house_in_title or apartment_in_title:
+        words = _HOUSE_TYPE_WORDS if expected_type == "dom" else _APARTMENT_TYPE_WORDS
+        return _has_type_word(title, words)
+    words = _HOUSE_TYPE_WORDS if expected_type == "dom" else _APARTMENT_TYPE_WORDS
+    return _has_type_word(blob, words)
+
+
 # --------------------------- BACKEND SEARCH API ---------------------------
 
 def _portal_for_url(url: str) -> str | None:
@@ -159,7 +224,9 @@ def _portal_for_url(url: str) -> str | None:
     return None
 
 
-def _check_via_search_api(query: str, portals: list[str], api_key: str) -> dict[str, str]:
+def _check_via_search_api(
+    query: str, portals: list[str], api_key: str, expected_type: str | None = None
+) -> dict[str, str]:
     """Jedno zapytanie do Brave Search API (oficjalne, platne API wyszukiwarki —
     NIE scraping) z filtrem site: pokrywa WSZYSTKIE portale naraz, wlacznie z
     Otodom. Endpoint i format zweryfikowane na zywo:
@@ -170,7 +237,10 @@ def _check_via_search_api(query: str, portals: list[str], api_key: str) -> dict[
     pierwszego trafionego ogloszenia na kazdym portalu, gdzie tytul+opis+url
     zawieraja WSZYSTKIE tokeny adresu (odporne na luzne dopasowania
     wyszukiwarki — zweryfikowane: fraza z Wikipedii bez tokenu ulicy jest
-    poprawnie odrzucana)."""
+    poprawnie odrzucana), URL wskazuje na KONKRETNE ogloszenie a nie strone
+    kategorii/wynikow (zweryfikowane: strona kategorii "mieszkania" na danej
+    ulicy bez tego bylaby falszywie uznana za trafienie), i typ nieruchomosci
+    zgadza sie z oczekiwanym (dom vs mieszkanie, patrz expected_property_type)."""
     tokens = _query_tokens(query)
     if len(tokens) < 2:
         return {}
@@ -193,18 +263,24 @@ def _check_via_search_api(query: str, portals: list[str], api_key: str) -> dict[
     matches: dict[str, str] = {}
     for r in results:
         url = r.get("url", "")
-        blob = f"{r.get('title', '')} {r.get('description', '')} {url}"
+        title = r.get("title", "")
+        blob = f"{title} {r.get('description', '')} {url}"
         if not _text_matches_all_tokens(blob, tokens):
             continue
         portal = _portal_for_url(url)
-        if portal and portal not in matches:
-            matches[portal] = url
+        if not portal or portal in matches:
+            continue
+        if not _is_individual_listing(portal, url):
+            continue
+        if not _matches_property_type(title, blob, expected_type):
+            continue
+        matches[portal] = url
     return matches
 
 
 # ----------------------------- BACKEND HTTP -----------------------------
 
-def _check_olx(query: str) -> str | None:
+def _check_olx(query: str, expected_type: str | None = None) -> str | None:
     """OLX — wewnetrzny endpoint JSON /api/v1/offers (dozwolony w robots.txt).
     Zweryfikowane na zywo: zwraca trafne oferty dla 'ulica, miejscowosc'.
     Zwraca URL pierwszego trafionego ogloszenia, albo None.
@@ -214,7 +290,9 @@ def _check_olx(query: str) -> str | None:
     w bluze o nazwie "Kozacka" wystawiona z Marek, bo tokeny (nazwa produktu +
     tag lokalizacji OLX) pasowaly tekstowo. Kazda oferta ma pole
     category.type — nieruchomosci maja "real_estate" — wiec filtrujemy po
-    tym PRZED dopasowaniem tokenow, nie tylko po tekscie."""
+    tym PRZED dopasowaniem tokenow, nie tylko po tekscie. Dodatkowo filtrujemy
+    po typie nieruchomosci (dom vs mieszkanie, patrz expected_property_type) —
+    endpoint /api/v1/offers zwraca oferty z calego OLX niezaleznie od typu."""
     tokens = _query_tokens(query)
     if len(tokens) < 2:
         return None
@@ -229,8 +307,9 @@ def _check_olx(query: str) -> str | None:
     for offer in offers:
         if offer.get("category", {}).get("type") != "real_estate":
             continue
-        blob = f"{offer.get('title','')} {offer.get('description','')} {offer.get('url','')}"
-        if _text_matches_all_tokens(blob, tokens):
+        title = offer.get("title", "")
+        blob = f"{title} {offer.get('description', '')} {offer.get('url', '')}"
+        if _text_matches_all_tokens(blob, tokens) and _matches_property_type(title, blob, expected_type):
             return offer.get("url")
     return None
 
@@ -289,10 +368,11 @@ def _get_browser_page(cfg: dict):
         return None
 
 
-def _check_via_browser(portal: str, query: str, cfg: dict) -> str | None:
+def _check_via_browser(portal: str, query: str, cfg: dict, expected_type: str | None = None) -> str | None:
     """Generyczny checker: laduje URL wyszukiwania portalu w prawdziwej
     przegladarce, czeka na wyrenderowanie i sprawdza, czy w tekscie strony
-    pojawiaja sie WSZYSTKIE tokeny adresu (ulica + miejscowosc). Podejscie
+    pojawiaja sie WSZYSTKIE tokeny adresu (ulica + miejscowosc) ORAZ slowo
+    zgodne z oczekiwanym typem nieruchomosci (dom vs mieszkanie). Podejscie
     'tekst na wyrenderowanej stronie' jest odporne na zmiany layoutu — nie
     zalezy od kruchych selektorow CSS. Zwraca URL STRONY WYNIKOW (nie
     pojedynczego ogloszenia — wyodrebnienie konkretnego linku z wyrenderowanego
@@ -315,7 +395,10 @@ def _check_via_browser(portal: str, query: str, cfg: dict) -> str | None:
         page.goto(url, timeout=35000, wait_until="domcontentloaded")
         page.wait_for_timeout(2000)  # daj JS-owi dorenderowac wyniki
         content = page.content()
-        return url if _text_matches_all_tokens(content, tokens) else None
+        # brak oddzielnego tytulu przy calej wyrenderowanej stronie — przekazujemy
+        # ten sam tekst jako "tytul" i "blob" (ten backend to i tak tylko fallback)
+        matched = _text_matches_all_tokens(content, tokens) and _matches_property_type(content, content, expected_type)
+        return url if matched else None
     except Exception:
         log.warning("Backend browser: blad przy %s (%s)", portal, url, exc_info=True)
         return None
@@ -340,9 +423,14 @@ def close_browser() -> None:
 
 # ------------------------------ DYSPOZYTOR ------------------------------
 
-def check_portals(query: str, portal_cfg: dict) -> PortalPresence:
+def check_portals(query: str, portal_cfg: dict, property_type: str | None = None) -> PortalPresence:
     """query = najlepiej 'ulica, miejscowosc' (patrz docstring modulu).
     portal_cfg = caly slownik cfg['portal_check'].
+    property_type = "dom" albo "mieszkanie" (patrz expected_property_type) —
+    odrzuca trafienia niewlasciwego typu nieruchomosci (np. kategoria
+    "mieszkania" na portalu, gdy szukamy domu jednorodzinnego) i strony
+    kategorii/wynikow zamiast konkretnych ogloszen. None = nie filtruj po
+    typie (lepiej przepuscic niz zgubic trafienie z powodu braku informacji).
 
     Kolejnosc backendow (patrz docstring modulu): search API (jesli jest
     klucz) -> zawsze OLX http (za darmo, niezaleznie od search API) ->
@@ -366,14 +454,14 @@ def check_portals(query: str, portal_cfg: dict) -> PortalPresence:
     api_key = os.environ.get(BRAVE_API_KEY_ENV_VAR)
     if api_key and all_wanted_portals:
         try:
-            matches.update(_check_via_search_api(query, all_wanted_portals, api_key))
+            matches.update(_check_via_search_api(query, all_wanted_portals, api_key, property_type))
         except Exception:
             log.warning("Search API check nie powiodl sie dla %r", query, exc_info=True)
         time.sleep(SEARCH_API_DELAY_SECONDS)
 
     if "olx" in http_portals and "olx" not in matches:
         try:
-            olx_url = _check_olx(query)
+            olx_url = _check_olx(query, property_type)
             if olx_url:
                 matches["olx"] = olx_url
         except Exception:
@@ -388,7 +476,7 @@ def check_portals(query: str, portal_cfg: dict) -> PortalPresence:
         if portal in matches:
             continue
         try:
-            browser_url = _check_via_browser(portal, query, portal_cfg)
+            browser_url = _check_via_browser(portal, query, portal_cfg, property_type)
             if browser_url:
                 matches[portal] = browser_url
         except Exception:
