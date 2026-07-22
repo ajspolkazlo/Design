@@ -178,8 +178,23 @@ def _is_individual_listing(portal: str, url: str) -> bool:
 # bez tego rozroznienia lapalo np. kategorie "mieszkania" dla leada opisujacego
 # budowe domu. Dla zabudowy wielorodzinnej (budynek z wieloma mieszkaniami)
 # odwrotnie — szukamy mieszkania, bo to indywidualne lokale sa wystawiane.
-_HOUSE_TYPE_WORDS = ["dom", "domek", "blizniak", "szeregowiec", "segment", "willa"]
-_APARTMENT_TYPE_WORDS = ["mieszkanie", "kawalerka", "apartament"]
+#
+# Odmiany wyrazow WPROST (nie \bdom bez konca granicy) — zweryfikowane na
+# zywo, ze samo \bdom (bez konca granicy slowa) falszywie dopasowuje sie do
+# "domiporta" w tytulach typu "Sprzedam mieszkanie ... - Domiporta.pl", mimo
+# ze ogloszenie jest mieszkaniem, nie domem.
+_HOUSE_TYPE_WORDS = [
+    "dom", "domu", "domem", "domek", "domku", "domki",
+    "blizniak", "blizniaka", "blizniaku",
+    "szeregowiec", "szeregowca", "szeregowcu",
+    "segment", "segmentu", "segmencie",
+    "willa", "willi",
+]
+_APARTMENT_TYPE_WORDS = [
+    "mieszkanie", "mieszkania", "mieszkaniu", "mieszkaniem",
+    "kawalerka", "kawalerke", "kawalerki",
+    "apartament", "apartamentu", "apartamencie",
+]
 
 
 def expected_property_type(kategoria_obiektu: str | None) -> str:
@@ -188,8 +203,10 @@ def expected_property_type(kategoria_obiektu: str | None) -> str:
 
 
 def _has_type_word(text: str, words: list[str]) -> bool:
+    # \b...\b (GRANICA Z OBU STRON) — nie samo \b... — inaczej "dom" fałszywie
+    # pasuje do "domiporta" (patrz komentarz przy _HOUSE_TYPE_WORDS wyzej)
     v = _norm(text)
-    return any(re.search(rf"\b{w}", v) for w in words)
+    return any(re.search(rf"\b{w}\b", v) for w in words)
 
 
 def _matches_property_type(title: str, blob: str, expected_type: str | None) -> bool:
