@@ -34,7 +34,10 @@ def compute_score(lead: dict, cfg: dict) -> int:
     weights = cfg["scoring"]["weights"]
     score = 0
 
-    if not lead.get("on_portal_found"):
+    # on_portal_found: True (znaleziono), False (sprawdzono, brak), None (nie
+    # sprawdzono — brak ulicy). Nagradzamy tylko potwierdzone False, nie "nie
+    # wiem" (ten sam wzor co company_has_website nizej).
+    if lead.get("on_portal_found") is False:
         score += weights.get("brak_na_portalach", 0)
 
     # company_has_website is None gdy nie sprawdzilismy (brak tokenu CEIDG /

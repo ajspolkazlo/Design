@@ -103,18 +103,22 @@ def step_enrich(cfg: dict) -> None:
             lat, lon = None, None
 
         on_portal_found, on_portal_json, on_portal_checked_at = None, None, None
-        try:
-            # ulica + miejscowosc to najsilniejszy sygnal (patrz portal_check.py) —
-            # gmina jako fallback tylko gdy nie mamy ulicy w danych
-            query = ", ".join(p for p in [lead["ulica"], lead["miejscowosc"]] if p)
-            if not query:
-                query = ", ".join(p for p in [lead["miejscowosc"], lead["gmina"]] if p)
-            presence = portal_check.check_portals(query, cfg["portal_check"])
-            on_portal_found = int(presence.is_present_anywhere)
-            on_portal_json = json.dumps(presence.__dict__, ensure_ascii=False)
-            on_portal_checked_at = presence.checked_at
-        except Exception:
-            log.exception("Nie udalo sie sprawdzic portali dla %s", lead["id_sprawy"])
+        if lead["ulica"]:
+            # Sprawdzamy portale TYLKO gdy mamy ulice. Bez niej zostaje sama
+            # miejscowosc — a "brak trafien dla samej miejscowosci" nie jest
+            # wiarygodnym sygnalem "czysty": kazde miasto ma cos na sprzedaz.
+            # Zweryfikowane na zywo: "Otwock Maly" (sama miejscowosc, dwa
+            # slowa) przechodzilo test "min. 2 tokeny" i dawalo falszywe
+            # trafienie na WSZYSTKICH 6 portalach. Zamiast zgadywac, zostawiamy
+            # on_portal_found=None ("nie sprawdzono"), nie False ("czysty").
+            try:
+                query = f"{lead['ulica']}, {lead['miejscowosc']}"
+                presence = portal_check.check_portals(query, cfg["portal_check"])
+                on_portal_found = int(presence.is_present_anywhere)
+                on_portal_json = json.dumps(presence.__dict__, ensure_ascii=False)
+                on_portal_checked_at = presence.checked_at
+            except Exception:
+                log.exception("Nie udalo sie sprawdzic portali dla %s", lead["id_sprawy"])
 
         distance_km = None
         if lat is not None and lon is not None:
@@ -148,7 +152,13 @@ def step_score(cfg: dict) -> None:
             lead["company_has_website"] = bool(company_info.get("website")) if company_info.get("found") else None
         except (json.JSONDecodeError, TypeError):
             lead["company_has_website"] = None
-        lead["on_portal_found"] = bool(lead.get("on_portal_found"))
+        # NULL (nie sprawdzono — brak ulicy, patrz step_enrich) -> None, nie
+        # False, tym samym wzorem co company_has_website powyzej. UWAGA:
+        # pandas czyta SQL NULL jako float('nan'), a bool(nan) jest (myląco)
+        # True — poleganie na tym bylo przypadkowo poprawne, ale kruche
+        # (pd.NA zamiast nan rzucilby wyjatkiem), wiec robimy to jawnie.
+        raw_portal_found = lead.get("on_portal_found")
+        lead["on_portal_found"] = None if pd.isna(raw_portal_found) else bool(raw_portal_found)
         score = scoring.compute_score(lead, cfg)
         db.update_status(conn, lead["id_sprawy"], status="scored", score=score)
     conn.close()
