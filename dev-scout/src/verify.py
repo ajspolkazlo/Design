@@ -454,6 +454,13 @@ def judge_match(
             elif dist_m > cfg["reject_distance_m"]:
                 hard_reject = True
                 reasons.append(f"pin ogłoszenia ~{dist_m/1000:.1f} km od działki z wniosku — INNA lokalizacja")
+            else:
+                # strefa "watpliwa" (likely_distance_m .. reject_distance_m): za
+                # daleko na "sasiedztwo", za blisko na pewne odrzucenie — bez tej
+                # galezi dystans w tym przedziale znikal calkowicie z powodow
+                # (zero informacji), mimo ze to WAZNY sygnal ostrzegawczy.
+                reasons.append(f"pin ~{dist_m/1000:.2f} km od działki z wniosku — prawdopodobnie INNA nieruchomość w tej samej miejscowości")
+                pluses -= 1
         else:
             # zgrubny pin (OLX): tylko wspierajaco, nigdy do odrzucenia
             if dist_m <= cfg["likely_distance_m"]:
