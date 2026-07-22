@@ -122,6 +122,7 @@ DEFAULT_SEARCH_URL_TEMPLATES = {
 @dataclass
 class PortalPresence:
     found_on: list[str] = field(default_factory=list)  # np. ["otodom", "olx"]
+    matches: dict[str, str] = field(default_factory=dict)  # portal -> URL konkretnego ogloszenia
     confidence: str = "low"   # "low" = dopasowanie po adresie, "high" = adres + nazwa firmy
     checked_at: str | None = None
 
@@ -158,23 +159,25 @@ def _portal_for_url(url: str) -> str | None:
     return None
 
 
-def _check_via_search_api(query: str, portals: list[str], api_key: str) -> list[str]:
+def _check_via_search_api(query: str, portals: list[str], api_key: str) -> dict[str, str]:
     """Jedno zapytanie do Brave Search API (oficjalne, platne API wyszukiwarki —
     NIE scraping) z filtrem site: pokrywa WSZYSTKIE portale naraz, wlacznie z
     Otodom. Endpoint i format zweryfikowane na zywo:
       GET https://api.search.brave.com/res/v1/web/search
       naglowek: X-Subscription-Token: <klucz>
     Rejestracja klucza: https://api-dashboard.search.brave.com (plan z
-    darmowymi kredytami co miesiac — patrz README). Zwraca liste portali,
-    na ktorych ZNALEZIONO oferte pasujaca do WSZYSTKICH tokenow adresu
-    (odporne na falszywe trafienia z luznego dopasowania wyszukiwarki)."""
+    darmowymi kredytami co miesiac — patrz README). Zwraca {portal: url}
+    pierwszego trafionego ogloszenia na kazdym portalu, gdzie tytul+opis+url
+    zawieraja WSZYSTKIE tokeny adresu (odporne na luzne dopasowania
+    wyszukiwarki — zweryfikowane: fraza z Wikipedii bez tokenu ulicy jest
+    poprawnie odrzucana)."""
     tokens = _query_tokens(query)
     if len(tokens) < 2:
-        return []
+        return {}
 
     site_filter = " OR ".join(f"site:{_PORTAL_DOMAINS[p]}" for p in portals if p in _PORTAL_DOMAINS)
     if not site_filter:
-        return []
+        return {}
     phrase = " ".join(f'"{t}"' for t in tokens)
     q = f"{phrase} ({site_filter})"
 
@@ -187,26 +190,34 @@ def _check_via_search_api(query: str, portals: list[str], api_key: str) -> list[
     resp.raise_for_status()
     results = resp.json().get("web", {}).get("results", [])
 
-    found: set[str] = set()
+    matches: dict[str, str] = {}
     for r in results:
         url = r.get("url", "")
         blob = f"{r.get('title', '')} {r.get('description', '')} {url}"
         if not _text_matches_all_tokens(blob, tokens):
             continue
         portal = _portal_for_url(url)
-        if portal:
-            found.add(portal)
-    return sorted(found)
+        if portal and portal not in matches:
+            matches[portal] = url
+    return matches
 
 
 # ----------------------------- BACKEND HTTP -----------------------------
 
-def _check_olx(query: str) -> bool:
+def _check_olx(query: str) -> str | None:
     """OLX — wewnetrzny endpoint JSON /api/v1/offers (dozwolony w robots.txt).
-    Zweryfikowane na zywo: zwraca trafne oferty dla 'ulica, miejscowosc'."""
+    Zweryfikowane na zywo: zwraca trafne oferty dla 'ulica, miejscowosc'.
+    Zwraca URL pierwszego trafionego ogloszenia, albo None.
+
+    WAZNE: endpoint przeszukuje CALY OLX (odziez, elektronika, praca...), nie
+    tylko nieruchomosci — zlapane na zywo: zapytanie "Kozacka, Marki" trafilo
+    w bluze o nazwie "Kozacka" wystawiona z Marek, bo tokeny (nazwa produktu +
+    tag lokalizacji OLX) pasowaly tekstowo. Kazda oferta ma pole
+    category.type — nieruchomosci maja "real_estate" — wiec filtrujemy po
+    tym PRZED dopasowaniem tokenow, nie tylko po tekscie."""
     tokens = _query_tokens(query)
     if len(tokens) < 2:
-        return False
+        return None
     resp = requests.get(
         OLX_OFFERS_URL,
         params={"query": query, "limit": 20},
@@ -216,10 +227,12 @@ def _check_olx(query: str) -> bool:
     resp.raise_for_status()
     offers = resp.json().get("data", [])
     for offer in offers:
+        if offer.get("category", {}).get("type") != "real_estate":
+            continue
         blob = f"{offer.get('title','')} {offer.get('description','')} {offer.get('url','')}"
         if _text_matches_all_tokens(blob, tokens):
-            return True
-    return False
+            return offer.get("url")
+    return None
 
 
 # --------------------------- BACKEND BROWSER ---------------------------
@@ -276,33 +289,36 @@ def _get_browser_page(cfg: dict):
         return None
 
 
-def _check_via_browser(portal: str, query: str, cfg: dict) -> bool:
+def _check_via_browser(portal: str, query: str, cfg: dict) -> str | None:
     """Generyczny checker: laduje URL wyszukiwania portalu w prawdziwej
     przegladarce, czeka na wyrenderowanie i sprawdza, czy w tekscie strony
     pojawiaja sie WSZYSTKIE tokeny adresu (ulica + miejscowosc). Podejscie
     'tekst na wyrenderowanej stronie' jest odporne na zmiany layoutu — nie
-    zalezy od kruchych selektorow CSS."""
+    zalezy od kruchych selektorow CSS. Zwraca URL STRONY WYNIKOW (nie
+    pojedynczego ogloszenia — wyodrebnienie konkretnego linku z wyrenderowanego
+    tekstu wymagaloby parsowania DOM, a ten backend to i tak tylko fallback bez
+    klucza search API) gdy dopasowanie znalezione, inaczej None."""
     tokens = _query_tokens(query)
     if len(tokens) < 2:
-        return False
+        return None
 
     templates = {**DEFAULT_SEARCH_URL_TEMPLATES, **cfg.get("search_url_templates", {})}
     template = templates.get(portal)
     if not template:
-        return False
+        return None
 
     url = template.replace("{query}", urllib.parse.quote(query))
     page = _get_browser_page(cfg)
     if page is None:
-        return False
+        return None
     try:
         page.goto(url, timeout=35000, wait_until="domcontentloaded")
         page.wait_for_timeout(2000)  # daj JS-owi dorenderowac wyniki
         content = page.content()
-        return _text_matches_all_tokens(content, tokens)
+        return url if _text_matches_all_tokens(content, tokens) else None
     except Exception:
         log.warning("Backend browser: blad przy %s (%s)", portal, url, exc_info=True)
-        return False
+        return None
     finally:
         try:
             page.close()
@@ -332,24 +348,34 @@ def check_portals(query: str, portal_cfg: dict) -> PortalPresence:
     klucz) -> zawsze OLX http (za darmo, niezaleznie od search API) ->
     browser (tylko gdy BRAK klucza search API i enable_browser=true). Kazdy
     checker jest w try/except: awaria jednego backendu/portalu nie blokuje
-    reszty."""
-    http_portals = portal_cfg.get("portale", [])
-    all_wanted_portals = list(dict.fromkeys(http_portals + portal_cfg.get("browser_portals", [])))
+    reszty.
 
-    found: list[str] = []
+    OLX jest CELOWO wykluczony z zapytania do search API (patrz
+    all_wanted_portals nizej) — Brave nie ma dostepu do pola category.type
+    ktore ma OLX-owy JSON, wiec dopasowanie tekstowe samo w sobie fałszywie
+    lapie NIE-nieruchomosciowe ogloszenia OLX (zweryfikowane na zywo:
+    "Kozacka, Marki" zlapalo bluze o nazwie "Kozacka" wystawiona z Marek).
+    _check_olx() nizej ma dostep do category.type i filtruje po nim —
+    zostawiamy WYLACZNIE jemu odpowiedzialnosc za OLX."""
+    http_portals = portal_cfg.get("portale", [])
+    browser_portals_cfg = portal_cfg.get("browser_portals", [])
+    all_wanted_portals = [p for p in dict.fromkeys(http_portals + browser_portals_cfg) if p != "olx"]
+
+    matches: dict[str, str] = {}
 
     api_key = os.environ.get(BRAVE_API_KEY_ENV_VAR)
     if api_key and all_wanted_portals:
         try:
-            found.extend(_check_via_search_api(query, all_wanted_portals, api_key))
+            matches.update(_check_via_search_api(query, all_wanted_portals, api_key))
         except Exception:
             log.warning("Search API check nie powiodl sie dla %r", query, exc_info=True)
         time.sleep(SEARCH_API_DELAY_SECONDS)
 
-    if "olx" in http_portals and "olx" not in found:
+    if "olx" in http_portals and "olx" not in matches:
         try:
-            if _check_olx(query):
-                found.append("olx")
+            olx_url = _check_olx(query)
+            if olx_url:
+                matches["olx"] = olx_url
         except Exception:
             log.warning("HTTP check olx nie powiodl sie dla %r", query, exc_info=True)
         time.sleep(REQUEST_DELAY_SECONDS)
@@ -359,17 +385,19 @@ def check_portals(query: str, portal_cfg: dict) -> PortalPresence:
     # zbedne (patrz docstring modulu)
     browser_portals = portal_cfg.get("browser_portals", []) if (portal_cfg.get("enable_browser") and not api_key) else []
     for portal in browser_portals:
-        if portal in found:
+        if portal in matches:
             continue
         try:
-            if _check_via_browser(portal, query, portal_cfg):
-                found.append(portal)
+            browser_url = _check_via_browser(portal, query, portal_cfg)
+            if browser_url:
+                matches[portal] = browser_url
         except Exception:
             log.warning("Browser check %s nie powiodl sie dla %r", portal, query, exc_info=True)
         time.sleep(BROWSER_DELAY_SECONDS)
 
     return PortalPresence(
-        found_on=found,
+        found_on=sorted(matches.keys()),
+        matches=matches,
         confidence="low",
         checked_at=datetime.now(timezone.utc).isoformat(),
     )

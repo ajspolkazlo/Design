@@ -21,7 +21,7 @@ from pathlib import Path
 import pandas as pd
 import yaml
 
-from src import company_lookup, db, geocode, portal_check, rwdz_fetch, rwdz_parse, scoring
+from src import cadastral, company_lookup, db, geocode, portal_check, rwdz_fetch, rwdz_parse, scoring
 from src.filters import apply_filters
 
 log = logging.getLogger("dev_scout")
@@ -95,24 +95,59 @@ def step_enrich(cfg: dict) -> None:
             log.exception("Nie udalo sie wzbogacic %s przez KRS/CEIDG", lead["id_sprawy"])
             info_json = json.dumps({"found": False, "error": "lookup_failed"})
 
-        try:
-            coords = geocode.geocode_address(lead["miejscowosc"] or "", lead["gmina"] or "", lead["ulica"] or None)
-            lat, lon = coords if coords else (None, None)
-        except Exception:
-            log.exception("Nie udalo sie zgeokodowac %s", lead["id_sprawy"])
-            lat, lon = None, None
+        # Geokodowanie: ULDK (numer dzialki) PRZED Nominatim (adres). ULDK
+        # zwraca dokladna geometrie dzialki katastralnej — dokladniejsze niz
+        # dopasowanie po nazwie ulicy, i dziala NAWET GDY RWDZ nie ma
+        # wypelnionej kolumny ulica (~67% realnych leadow — zweryfikowane na
+        # zywo), bo numer dzialki jest w RWDZ zawsze (wymagany element kazdego
+        # wniosku). Patrz src/cadastral.py.
+        raw = json.loads(lead["raw_json"] or "{}")
+        parcel_id = cadastral.build_parcel_id(
+            raw.get("jednosta_numer_ew"), raw.get("obreb_numer"), raw.get("numer_dzialki")
+        )
+
+        lat, lon = None, None
+        if parcel_id:
+            try:
+                coords = cadastral.fetch_parcel_centroid(parcel_id)
+                if coords:
+                    lat, lon = coords
+            except Exception:
+                log.exception("ULDK: nie udalo sie zgeokodowac dzialki %s dla %s", parcel_id, lead["id_sprawy"])
+
+        if lat is None:
+            # fallback: Nominatim po adresie — gdy brak numeru dzialki albo
+            # ULDK go nie rozpoznaje (np. dzialka scalona/podzielona od tego czasu)
+            try:
+                coords = geocode.geocode_address(lead["miejscowosc"] or "", lead["gmina"] or "", lead["ulica"] or None)
+                lat, lon = coords if coords else (None, None)
+            except Exception:
+                log.exception("Nie udalo sie zgeokodowac %s", lead["id_sprawy"])
+                lat, lon = None, None
+
+        # Ulica do sprawdzenia portali: ta z RWDZ, albo — gdy brak — odzyskana
+        # z dokladnych wspolrzednych ULDK przez odwrotne geokodowanie (patrz
+        # geocode.reverse_geocode_street). To jedyny sposob na sensowne
+        # sprawdzenie portali dla wiekszosci leadow, ktore nie maja ulicy
+        # wprost w danych RWDZ.
+        query_ulica = lead["ulica"]
+        if not query_ulica and lat is not None and parcel_id:
+            try:
+                query_ulica = geocode.reverse_geocode_street(lat, lon)
+            except Exception:
+                log.exception("Odwrotne geokodowanie nie powiodlo sie dla %s", lead["id_sprawy"])
 
         on_portal_found, on_portal_json, on_portal_checked_at = None, None, None
-        if lead["ulica"]:
-            # Sprawdzamy portale TYLKO gdy mamy ulice. Bez niej zostaje sama
-            # miejscowosc — a "brak trafien dla samej miejscowosci" nie jest
-            # wiarygodnym sygnalem "czysty": kazde miasto ma cos na sprzedaz.
-            # Zweryfikowane na zywo: "Otwock Maly" (sama miejscowosc, dwa
-            # slowa) przechodzilo test "min. 2 tokeny" i dawalo falszywe
-            # trafienie na WSZYSTKICH 6 portalach. Zamiast zgadywac, zostawiamy
-            # on_portal_found=None ("nie sprawdzono"), nie False ("czysty").
+        if query_ulica:
+            # Sprawdzamy portale TYLKO gdy mamy (realna albo odzyskana z ULDK)
+            # ulice. Bez niej zostaje sama miejscowosc — a "brak trafien dla
+            # samej miejscowosci" nie jest wiarygodnym sygnalem "czysty": kazde
+            # miasto ma cos na sprzedaz. Zweryfikowane na zywo: "Otwock Maly"
+            # (sama miejscowosc, dwa slowa) przechodzilo test "min. 2 tokeny" i
+            # dawalo falszywe trafienie na WSZYSTKICH 6 portalach. Zamiast
+            # zgadywac, zostawiamy on_portal_found=None ("nie sprawdzono").
             try:
-                query = f"{lead['ulica']}, {lead['miejscowosc']}"
+                query = f"{query_ulica}, {lead['miejscowosc']}"
                 presence = portal_check.check_portals(query, cfg["portal_check"])
                 on_portal_found = int(presence.is_present_anywhere)
                 on_portal_json = json.dumps(presence.__dict__, ensure_ascii=False)

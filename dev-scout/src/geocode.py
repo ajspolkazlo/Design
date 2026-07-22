@@ -82,3 +82,22 @@ def geocode_address(miejscowosc: str, gmina: str, ulica: str | None = None) -> t
 
     query = ", ".join(p for p in [miejscowosc, gmina, "Polska"] if p)
     return _try_geocode(query)
+
+
+def reverse_geocode_street(lat: float, lon: float) -> str | None:
+    """Odwrotne geokodowanie: z dokladnych wspolrzednych (np. z ULDK — patrz
+    src/cadastral.py) odzyskuje nazwe ulicy. Uzywane dla ~67% leadow z realnego
+    RWDZ, ktore nie maja wypelnionej kolumny ulica, ale MAJA numer dzialki —
+    zamiast szukac po samej miejscowosci (za slaby sygnal), odzyskujemy realna
+    ulice i szukamy po niej normalnie. Zweryfikowane na zywo: dzialka bez ulicy
+    w RWDZ, po ULDK+reverse geocode -> "Karnicka" (z numerem domu)."""
+    try:
+        location = _geolocator.reverse(f"{lat}, {lon}", timeout=10, language="pl")
+    except GeocoderTimedOut:
+        return None
+    finally:
+        time.sleep(1.1)  # limit Nominatim: max 1 req/s
+
+    if location is None:
+        return None
+    return location.raw.get("address", {}).get("road")
