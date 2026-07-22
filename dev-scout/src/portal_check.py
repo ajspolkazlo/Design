@@ -123,7 +123,8 @@ DEFAULT_SEARCH_URL_TEMPLATES = {
 class PortalPresence:
     found_on: list[str] = field(default_factory=list)  # np. ["otodom", "olx"]
     matches: dict[str, str] = field(default_factory=dict)  # portal -> URL konkretnego ogloszenia
-    confidence: str = "low"   # "low" = dopasowanie po adresie, "high" = adres + nazwa firmy
+    confirmed_by_investor: list[str] = field(default_factory=list)  # portale, gdzie nazwa inwestora TEZ sie zgadza
+    confidence: str = "low"   # "high" gdy confirmed_by_investor niepuste, inaczej "low" (samo dopasowanie adresu)
     checked_at: str | None = None
 
     @property
@@ -231,6 +232,48 @@ def _matches_property_type(title: str, blob: str, expected_type: str | None) -> 
     return _has_type_word(blob, words)
 
 
+# Formy prawne odcinane z nazwy inwestora przed cross-checkiem — zostaje
+# "rdzen" nazwy (np. "Nowak Budownictwo" z "Nowak Budownictwo Sp. z o.o.").
+_LEGAL_FORM_RE = re.compile(
+    r"\bsp\.?\s*z\s*o\.?\s*o\.?\b|\bspolka\s+z\s+ograniczona\s+odpowiedzialnoscia\b"
+    r"|\bs\.?a\.?\b|\bsp\.?\s*k\.?\b|\bspolka\s+komandytowa\b|\bspolka\s+jawna\b|\bs\.?c\.?\b",
+    re.IGNORECASE,
+)
+
+
+def investor_core_name(investor: str | None) -> str | None:
+    """Nazwa inwestora bez formy prawnej — do cross-checku z tekstem ogloszenia.
+    None gdy po odcieciu formy prawnej nic sensownego nie zostaje (np. sama
+    'Sp. z o.o.' bez nazwy wlasciwej, albo brak inwestora w RWDZ w ogole)."""
+    if not investor:
+        return None
+    v = _norm(investor)
+    v = _LEGAL_FORM_RE.sub(" ", v)
+    v = re.sub(r"[.,\"'()]", " ", v)
+    tokens = [t for t in v.split() if len(t) > 2]
+    return " ".join(tokens) if tokens else None
+
+
+def _matches_investor(text: str, investor_core: str | None) -> bool:
+    """CELOWO NIE uzywane jako filtr odrzucajacy (patrz docstring modulu:
+    'deweloper sprzedaje pod nazwa projektu/osiedla, nie nazwa spolki' — brak
+    dopasowania nazwy inwestora w ogloszeniu jest NORMALNY, nie jest sygnalem
+    zlego dopasowania). Uzywane WYLACZNIE do podniesienia confidence z "low"
+    (samo dopasowanie adresu) do "high" (adres + nazwa inwestora), gdy nazwa
+    faktycznie sie pojawia — np. deweloper podpisuje sie wlasna marka w opisie."""
+    if not investor_core:
+        return False
+    v = _norm(text)
+    tokens = investor_core.split()
+    return bool(tokens) and all(t in v for t in tokens)
+
+
+@dataclass
+class _Match:
+    url: str
+    investor_confirmed: bool = False
+
+
 # --------------------------- BACKEND SEARCH API ---------------------------
 
 def _portal_for_url(url: str) -> str | None:
@@ -242,22 +285,28 @@ def _portal_for_url(url: str) -> str | None:
 
 
 def _check_via_search_api(
-    query: str, portals: list[str], api_key: str, expected_type: str | None = None
-) -> dict[str, str]:
+    query: str,
+    portals: list[str],
+    api_key: str,
+    expected_type: str | None = None,
+    investor_core: str | None = None,
+) -> dict[str, _Match]:
     """Jedno zapytanie do Brave Search API (oficjalne, platne API wyszukiwarki —
     NIE scraping) z filtrem site: pokrywa WSZYSTKIE portale naraz, wlacznie z
     Otodom. Endpoint i format zweryfikowane na zywo:
       GET https://api.search.brave.com/res/v1/web/search
       naglowek: X-Subscription-Token: <klucz>
     Rejestracja klucza: https://api-dashboard.search.brave.com (plan z
-    darmowymi kredytami co miesiac — patrz README). Zwraca {portal: url}
+    darmowymi kredytami co miesiac — patrz README). Zwraca {portal: _Match}
     pierwszego trafionego ogloszenia na kazdym portalu, gdzie tytul+opis+url
     zawieraja WSZYSTKIE tokeny adresu (odporne na luzne dopasowania
     wyszukiwarki — zweryfikowane: fraza z Wikipedii bez tokenu ulicy jest
     poprawnie odrzucana), URL wskazuje na KONKRETNE ogloszenie a nie strone
     kategorii/wynikow (zweryfikowane: strona kategorii "mieszkania" na danej
     ulicy bez tego bylaby falszywie uznana za trafienie), i typ nieruchomosci
-    zgadza sie z oczekiwanym (dom vs mieszkanie, patrz expected_property_type)."""
+    zgadza sie z oczekiwanym (dom vs mieszkanie, patrz expected_property_type).
+    _Match.investor_confirmed = True gdy nazwa inwestora (bez formy prawnej)
+    TEZ pojawia sie w tytule/opisie — patrz _matches_investor."""
     tokens = _query_tokens(query)
     if len(tokens) < 2:
         return {}
@@ -277,7 +326,7 @@ def _check_via_search_api(
     resp.raise_for_status()
     results = resp.json().get("web", {}).get("results", [])
 
-    matches: dict[str, str] = {}
+    matches: dict[str, _Match] = {}
     for r in results:
         url = r.get("url", "")
         title = r.get("title", "")
@@ -291,16 +340,16 @@ def _check_via_search_api(
             continue
         if not _matches_property_type(title, blob, expected_type):
             continue
-        matches[portal] = url
+        matches[portal] = _Match(url=url, investor_confirmed=_matches_investor(blob, investor_core))
     return matches
 
 
 # ----------------------------- BACKEND HTTP -----------------------------
 
-def _check_olx(query: str, expected_type: str | None = None) -> str | None:
+def _check_olx(query: str, expected_type: str | None = None, investor_core: str | None = None) -> _Match | None:
     """OLX — wewnetrzny endpoint JSON /api/v1/offers (dozwolony w robots.txt).
     Zweryfikowane na zywo: zwraca trafne oferty dla 'ulica, miejscowosc'.
-    Zwraca URL pierwszego trafionego ogloszenia, albo None.
+    Zwraca _Match pierwszego trafionego ogloszenia, albo None.
 
     WAZNE: endpoint przeszukuje CALY OLX (odziez, elektronika, praca...), nie
     tylko nieruchomosci — zlapane na zywo: zapytanie "Kozacka, Marki" trafilo
@@ -327,7 +376,7 @@ def _check_olx(query: str, expected_type: str | None = None) -> str | None:
         title = offer.get("title", "")
         blob = f"{title} {offer.get('description', '')} {offer.get('url', '')}"
         if _text_matches_all_tokens(blob, tokens) and _matches_property_type(title, blob, expected_type):
-            return offer.get("url")
+            return _Match(url=offer.get("url"), investor_confirmed=_matches_investor(blob, investor_core))
     return None
 
 
@@ -385,16 +434,19 @@ def _get_browser_page(cfg: dict):
         return None
 
 
-def _check_via_browser(portal: str, query: str, cfg: dict, expected_type: str | None = None) -> str | None:
+def _check_via_browser(
+    portal: str, query: str, cfg: dict, expected_type: str | None = None, investor_core: str | None = None
+) -> _Match | None:
     """Generyczny checker: laduje URL wyszukiwania portalu w prawdziwej
     przegladarce, czeka na wyrenderowanie i sprawdza, czy w tekscie strony
     pojawiaja sie WSZYSTKIE tokeny adresu (ulica + miejscowosc) ORAZ slowo
     zgodne z oczekiwanym typem nieruchomosci (dom vs mieszkanie). Podejscie
     'tekst na wyrenderowanej stronie' jest odporne na zmiany layoutu — nie
-    zalezy od kruchych selektorow CSS. Zwraca URL STRONY WYNIKOW (nie
-    pojedynczego ogloszenia — wyodrebnienie konkretnego linku z wyrenderowanego
-    tekstu wymagaloby parsowania DOM, a ten backend to i tak tylko fallback bez
-    klucza search API) gdy dopasowanie znalezione, inaczej None."""
+    zalezy od kruchych selektorow CSS. Zwraca _Match ze STRONA WYNIKOW jako url
+    (nie pojedynczego ogloszenia — wyodrebnienie konkretnego linku z
+    wyrenderowanego tekstu wymagaloby parsowania DOM, a ten backend to i tak
+    tylko fallback bez klucza search API) gdy dopasowanie znalezione, inaczej
+    None."""
     tokens = _query_tokens(query)
     if len(tokens) < 2:
         return None
@@ -415,7 +467,7 @@ def _check_via_browser(portal: str, query: str, cfg: dict, expected_type: str | 
         # brak oddzielnego tytulu przy calej wyrenderowanej stronie — przekazujemy
         # ten sam tekst jako "tytul" i "blob" (ten backend to i tak tylko fallback)
         matched = _text_matches_all_tokens(content, tokens) and _matches_property_type(content, content, expected_type)
-        return url if matched else None
+        return _Match(url=url, investor_confirmed=_matches_investor(content, investor_core)) if matched else None
     except Exception:
         log.warning("Backend browser: blad przy %s (%s)", portal, url, exc_info=True)
         return None
@@ -440,7 +492,9 @@ def close_browser() -> None:
 
 # ------------------------------ DYSPOZYTOR ------------------------------
 
-def check_portals(query: str, portal_cfg: dict, property_type: str | None = None) -> PortalPresence:
+def check_portals(
+    query: str, portal_cfg: dict, property_type: str | None = None, investor_name: str | None = None
+) -> PortalPresence:
     """query = najlepiej 'ulica, miejscowosc' (patrz docstring modulu).
     portal_cfg = caly slownik cfg['portal_check'].
     property_type = "dom" albo "mieszkanie" (patrz expected_property_type) —
@@ -448,6 +502,11 @@ def check_portals(query: str, portal_cfg: dict, property_type: str | None = None
     "mieszkania" na portalu, gdy szukamy domu jednorodzinnego) i strony
     kategorii/wynikow zamiast konkretnych ogloszen. None = nie filtruj po
     typie (lepiej przepuscic niz zgubic trafienie z powodu braku informacji).
+    investor_name = nazwa inwestora z RWDZ (surowa, z forma prawna) — NIE
+    filtruje trafien (patrz docstring _matches_investor), tylko podnosi
+    confidence na "high" i dopisuje portal do confirmed_by_investor, gdy nazwa
+    (bez formy prawnej) faktycznie pojawia sie w ogloszeniu — cross-check
+    "czy ten lead naprawde jest ta sama inwestycja, nie tylko ten sam adres".
 
     Kolejnosc backendow (patrz docstring modulu): search API (jesli jest
     klucz) -> zawsze OLX http (za darmo, niezaleznie od search API) ->
@@ -465,22 +524,23 @@ def check_portals(query: str, portal_cfg: dict, property_type: str | None = None
     http_portals = portal_cfg.get("portale", [])
     browser_portals_cfg = portal_cfg.get("browser_portals", [])
     all_wanted_portals = [p for p in dict.fromkeys(http_portals + browser_portals_cfg) if p != "olx"]
+    investor_core = investor_core_name(investor_name)
 
-    matches: dict[str, str] = {}
+    matches: dict[str, _Match] = {}
 
     api_key = os.environ.get(BRAVE_API_KEY_ENV_VAR)
     if api_key and all_wanted_portals:
         try:
-            matches.update(_check_via_search_api(query, all_wanted_portals, api_key, property_type))
+            matches.update(_check_via_search_api(query, all_wanted_portals, api_key, property_type, investor_core))
         except Exception:
             log.warning("Search API check nie powiodl sie dla %r", query, exc_info=True)
         time.sleep(SEARCH_API_DELAY_SECONDS)
 
     if "olx" in http_portals and "olx" not in matches:
         try:
-            olx_url = _check_olx(query, property_type)
-            if olx_url:
-                matches["olx"] = olx_url
+            olx_match = _check_olx(query, property_type, investor_core)
+            if olx_match:
+                matches["olx"] = olx_match
         except Exception:
             log.warning("HTTP check olx nie powiodl sie dla %r", query, exc_info=True)
         time.sleep(REQUEST_DELAY_SECONDS)
@@ -493,16 +553,18 @@ def check_portals(query: str, portal_cfg: dict, property_type: str | None = None
         if portal in matches:
             continue
         try:
-            browser_url = _check_via_browser(portal, query, portal_cfg, property_type)
-            if browser_url:
-                matches[portal] = browser_url
+            browser_match = _check_via_browser(portal, query, portal_cfg, property_type, investor_core)
+            if browser_match:
+                matches[portal] = browser_match
         except Exception:
             log.warning("Browser check %s nie powiodl sie dla %r", portal, query, exc_info=True)
         time.sleep(BROWSER_DELAY_SECONDS)
 
+    confirmed_by_investor = sorted(p for p, m in matches.items() if m.investor_confirmed)
     return PortalPresence(
         found_on=sorted(matches.keys()),
-        matches=matches,
-        confidence="low",
+        matches={p: m.url for p, m in matches.items()},
+        confirmed_by_investor=confirmed_by_investor,
+        confidence="high" if confirmed_by_investor else "low",
         checked_at=datetime.now(timezone.utc).isoformat(),
     )

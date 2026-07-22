@@ -149,7 +149,7 @@ def step_enrich(cfg: dict) -> None:
             try:
                 query = f"{query_ulica}, {lead['miejscowosc']}"
                 property_type = portal_check.expected_property_type(lead["kategoria_obiektu"])
-                presence = portal_check.check_portals(query, cfg["portal_check"], property_type)
+                presence = portal_check.check_portals(query, cfg["portal_check"], property_type, lead["inwestor"])
                 on_portal_found = int(presence.is_present_anywhere)
                 on_portal_json = json.dumps(presence.__dict__, ensure_ascii=False)
                 on_portal_checked_at = presence.checked_at
