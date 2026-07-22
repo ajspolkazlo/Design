@@ -100,6 +100,35 @@ def test_judge_match_no_facts_is_review():
     assert verdict.verdict == "REVIEW"
 
 
+def test_judge_match_dead_link_rejected():
+    # link wygasl/przekierowal -> REJECTED (nie REVIEW), zeby martwy link nie
+    # pokazywal sie jako klikalne "ogloszenie" w Excelu
+    facts = verify._dead_link()
+    verdict = verify.judge_match("otodom", "http://example.com/x", facts, {}, {}, CFG)
+    assert verdict.verdict == "REJECTED"
+    assert any("nieaktualne" in r for r in verdict.reasons)
+
+
+def test_judge_match_rental_rejected():
+    # ogloszenie WYNAJMU nigdy nie jest nasza inwestycja (pozwolenie = budowa
+    # na sprzedaz) -> twardy REJECTED niezaleznie od reszty sygnalow
+    facts = verify.ListingFacts(source="otodom_json", market="secondary", is_rental=True,
+                                 coords_precise=True, lat=52.1, lon=20.1)
+    lead = {"kubatura": None, "data_wniosku": None, "lat": 52.1, "lon": 20.1}
+    verdict = verify.judge_match("otodom", "http://example.com/x", facts, lead, {}, CFG)
+    assert verdict.verdict == "REJECTED"
+    assert any("WYNAJMU" in r for r in verdict.reasons)
+
+
+def test_is_rental_detection():
+    from src import portal_check
+    assert portal_check._is_rental("https://www.morizon.pl/oferta/wynajem-dom-x-mzn123")
+    assert portal_check._is_rental("https://www.olx.pl/d/oferta/dom-na-wynajem-x", "Dom na wynajem")
+    assert portal_check._is_rental("https://x.pl/oferta/dom", "Ładny dom do wynajęcia")
+    # sprzedaz NIE jest wynajmem
+    assert not portal_check._is_rental("https://www.otodom.pl/pl/oferta/dom-na-sprzedaz-x", "dom na sprzedaż")
+
+
 def test_best_verdict_prefers_confirmed_over_rejected():
     verdicts = [
         verify.MatchVerdict("olx", "u1", "REJECTED"),

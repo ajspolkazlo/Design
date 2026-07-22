@@ -1,12 +1,52 @@
 # Audyt Dev Scout — co zmienić, żeby mieć najświeższe i najtrafniejsze leady
 
-Stan na 22 lipca 2026, po trzech rundach pracy: (1) wdrożenie wielosygnałowej
+Stan na 22 lipca 2026, po czterech rundach pracy: (1) wdrożenie wielosygnałowej
 weryfikacji dopasowań (`src/verify.py`) + raportu Excel (`tools/report_xlsx.py`),
 (2) domknięcie większości znalezisk z pierwszej rundy audytu — scoring, recheck,
 cache, adres pełny, testy, poprawki Excela, (3) usunięcie zakładki Dashboard
 (źle się renderowała) i rozszerzenie ekstrakcji danych strukturalnych z Otodom/
-OLX na pozostałe 4 portale. Punkty ułożone od największego wpływu.
+OLX na pozostałe 4 portale, (4) precyzja dopasowań: twarde odrzucanie ogłoszeń
+wynajmu i wygasłych/martwych linków, brak klikalnych martwych linków w Excelu.
+Punkty ułożone od największego wpływu.
 "✅ zrobione" = już w kodzie na tym branchu, reszta = rekomendacje.
+
+---
+
+## 00. Precyzja dopasowań — wynajem, martwe linki, puste linki (runda 4)
+
+Zgłoszone przez Adama: w Excelu wciąż były (a) puste linki, (b) nieaktualne
+linki, (c) linki do ogłoszeń o WYNAJEM. Zbadane na żywo i naprawione:
+
+- ✅ **Wynajem odrzucany twardo.** Pozwolenie na budowę = nowy budynek na
+  SPRZEDAŻ, więc ogłoszenie wynajmu nigdy nie jest tą inwestycją (to zwykle
+  istniejący budynek wynajmowany przy tej samej ulicy). Filtr działa na 3
+  poziomach: (1) `portal_check._is_rental` odrzuca kandydata już na etapie
+  wyszukiwania po URL/tytule ("wynaj…"), (2) OLX ma osobną kategorię
+  "Domy do wynajęcia" (cat_id 25) — łapaną tym samym filtrem, (3) Otodom ma
+  autorytatywne pole `target.OfferType` (sprzedaz/wynajem) sprawdzane w
+  `verify`. Zweryfikowane na żywo: lead 13861 (Radzymin), który wcześniej
+  matchował ogłoszenie WYNAJMU na Morizon, po zmianie ma zero dopasowań i
+  poprawnie czyta się jako CLEAN.
+- ✅ **Martwe/wygasłe linki → REJECTED, nie REVIEW.** Wcześniej gdy link
+  wygasł i portal przekierował poza ofertę, `verify` zwracał `None`, co
+  `judge_match` traktował jak "brak danych strukturalnych" (REVIEW) — i martwy
+  link nadal pokazywał się jako klikalne "ogłoszenie". Teraz zwracamy odrębny
+  sygnał `dead_link` → werdykt REJECTED z powodem "ogłoszenie nieaktualne".
+  Zweryfikowane na żywo: lead 813 (Jabłonna), Domiporta — link przekierował na
+  stronę kategorii, poprawnie oznaczony REJECTED.
+- ✅ **Brak klikalnych martwych/mylących linków w Excelu.** Kolumny per-portal
+  robią klikalny link TYLKO dla dopasowań nie-REJECTED z niepustym URL-em; dla
+  odrzuconych (wynajem/nieaktualne/inna nieruchomość) i pustych URL-i
+  pokazujemy sam znacznik „✖ odrzucone" bez hiperłącza. Sprawdzone na próbce:
+  13 zdrowych klikalnych ogłoszeń, 0 klikalnych odrzuconych.
+- ✅ **Lead z samymi odrzuconymi dopasowaniami = CLEAN, nie „odrzucone".**
+  Jeśli wszystko, co znaleziono, odrzucono (wynajem/martwe/inna nieruchomość),
+  to z punktu widzenia leada NIC wiarygodnego nie jest na portalu — czyli
+  wciąż dobry, wczesny lead. Excel pokazuje CLEAN z rozpiską, co odrzucono i
+  dlaczego (spójne z `on_portal_found`, który już wcześniej pomijał REJECTED).
+
+Pokryte testami (`tests/test_verify.py`): odrzucanie wynajmu (URL/tytuł/pole
+Otodom), martwy link → REJECTED, detekcja `_is_rental`.
 
 ---
 

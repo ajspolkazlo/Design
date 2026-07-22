@@ -292,6 +292,17 @@ class ListingFacts:
     lon: float | None = None
     coords_precise: bool = False       # OLX rozmywa pin — wtedy False
     advertiser: str | None = None      # "business"/"private"/"agency"
+    is_rental: bool = False            # ogloszenie WYNAJMU (nie sprzedaz) — nigdy nie nasz lead
+    dead: bool = False                 # link wygasl/przekierowal poza oferte (nieaktualne ogloszenie)
+
+
+# Zwracany, gdy URL ogloszenia przekierowal poza konkretna oferte (wygasl) —
+# ODROZNIENIE od None (strona zywa, ale nie dalo sie sparsowac danych). None ->
+# werdykt REVIEW ("tylko dopasowanie tekstowe"), DEAD_LINK -> REJECTED
+# ("ogloszenie nieaktualne"). Bez tego rozroznienia martwy link szedl jako
+# REVIEW i pokazywal sie w Excelu jako klikalne "ogloszenie" prowadzace donikad.
+def _dead_link() -> "ListingFacts":
+    return ListingFacts(source="dead_link", dead=True)
 
 
 def fetch_otodom_facts(url: str, timeout: int = 20) -> ListingFacts | None:
@@ -305,7 +316,7 @@ def fetch_otodom_facts(url: str, timeout: int = 20) -> ListingFacts | None:
     from src import portal_check  # import tutaj — unika cyklu importu na poziomie modulu
     if not portal_check._is_individual_listing("otodom", resp.url):
         log.info("Ogloszenie %s przekierowalo poza konkretna oferte (%s) — prawdopodobnie wygaslo, pomijam", url, resp.url)
-        return None
+        return _dead_link()
     body = resp.text
     m = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', body, re.S)
     if not m:
@@ -323,6 +334,9 @@ def fetch_otodom_facts(url: str, timeout: int = 20) -> ListingFacts | None:
         except (TypeError, ValueError):
             return None
 
+    # target.OfferType = "sprzedaz" / "wynajem" — autorytatywne pole Otodom
+    # (pewniejsze niz slowo w URL/tytule). Wynajem = nie nasza inwestycja.
+    offer_type = (t.get("OfferType") or "").lower()
     facts = ListingFacts(
         source="otodom_json",
         market=(ad.get("market") or "").lower() or None,
@@ -333,6 +347,7 @@ def fetch_otodom_facts(url: str, timeout: int = 20) -> ListingFacts | None:
         lat=_f(loc.get("latitude")), lon=_f(loc.get("longitude")),
         coords_precise=True,
         advertiser=ad.get("advertiserType"),
+        is_rental=(offer_type == "wynajem"),
     )
     if facts.lat is None:
         mlat = re.search(r'"latitude"\s*:\s*(-?\d{1,2}\.\d{3,})', body)
@@ -516,7 +531,9 @@ def fetch_html_facts(portal: str, url: str, timeout: int = 20) -> ListingFacts |
     from src import portal_check  # import tutaj, nie na gorze modulu — unika cyklu importu
     if not portal_check._is_individual_listing(portal, resp.url):
         log.info("Ogloszenie %s przekierowalo poza konkretna oferte (%s) — prawdopodobnie wygaslo, pomijam", url, resp.url)
-        return None
+        return _dead_link()
+    if portal_check._is_rental(resp.url):  # wynajem po finalnym URL — nie nasz lead
+        return ListingFacts(source=f"{portal}_html", is_rental=True)
     body = resp.text
 
     extractor = _STRUCTURED_EXTRACTORS.get(portal)
@@ -608,6 +625,17 @@ def judge_match(
     pluses = 0
     hard_reject = False
     geo_confirmed = False
+
+    # Twarde odrzucenia PRZED cala reszta — link nieaktualny albo wynajem to nie
+    # jest "slabe dopasowanie do rozwazenia", tylko "to na pewno nie nasz lead".
+    if facts is not None and facts.dead:
+        return MatchVerdict(portal, url, "REJECTED",
+                            ["ogłoszenie nieaktualne — link wygasł lub przekierował poza konkretną ofertę"],
+                            {"source": facts.source})
+    if facts is not None and facts.is_rental:
+        return MatchVerdict(portal, url, "REJECTED",
+                            ["ogłoszenie dotyczy WYNAJMU, nie sprzedaży — nowa inwestycja z pozwolenia jest na sprzedaż"],
+                            {"source": facts.source})
 
     if facts is None:
         return MatchVerdict(portal, url, "REVIEW", ["brak danych strukturalnych ogłoszenia — tylko dopasowanie tekstowe"], {})

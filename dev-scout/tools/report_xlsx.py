@@ -66,8 +66,11 @@ def load_rows(db_path: Path, status: str) -> pd.DataFrame:
 
 def lead_verdict_and_reasons(row) -> tuple[str, str, str, str]:
     """(werdykt, powody, linki_tekst, pierwszy_url). Werdykt leada:
-    - najlepszy werdykt dopasowan z verify_json, jesli byly dopasowania
-    - CLEAN gdy sprawdzono i nic nie znaleziono
+    - najlepszy werdykt WIARYGODNYCH dopasowan (nie-REJECTED) z verify_json
+    - CLEAN gdy sprawdzono i nie ma zadnego wiarygodnego dopasowania — TAKZE
+      gdy cos znaleziono, ale wszystko odrzucono (wynajem/nieaktualne/inna
+      nieruchomosc): z punktu widzenia leada nadal NIC wiarygodnego nie jest
+      na portalu = wciaz dobry, wczesny lead. Powody wymieniaja, co odrzucono.
     - UNCHECKED gdy nie bylo jak sprawdzic (brak ulicy)"""
     try:
         vj = json.loads(row.get("verify_json") or "{}")
@@ -76,36 +79,49 @@ def lead_verdict_and_reasons(row) -> tuple[str, str, str, str]:
     matches = vj.get("matches") or []
     checked = not pd.isna(row.get("on_portal_found"))
 
-    if not matches:
-        if checked:
-            return "CLEAN", "sprawdzono 6 portali — zero dopasowań dla tej lokalizacji", "", ""
-        return "UNCHECKED", "brak ulicy w RWDZ i nie dało się jej odzyskać z działki — portali nie sprawdzano", "", ""
-
     order = ["CONFIRMED", "LIKELY", "REVIEW", "REJECTED"]
-    best = min((m["verdict"] for m in matches), key=order.index)
+    accepted = [m for m in matches if m["verdict"] != "REJECTED"]
+
+    if not accepted:
+        if not checked:
+            return "UNCHECKED", "brak ulicy w RWDZ i nie dało się jej odzyskać z działki — portali nie sprawdzano", "", ""
+        if not matches:
+            return "CLEAN", "sprawdzono 6 portali — zero dopasowań dla tej lokalizacji", "", ""
+        # cos znaleziono, ale wszystko odrzucono — pokazujemy dlaczego
+        rejected_lines = [
+            f"[{m['portal']}] odrzucone: {'; '.join(m.get('reasons') or ['(bez powodów)'])}"
+            for m in matches
+        ]
+        return ("CLEAN",
+                "brak wiarygodnego ogłoszenia — znalezione dopasowania odrzucono:\n" + "\n".join(rejected_lines),
+                "", "")
+
+    best = min((m["verdict"] for m in accepted), key=order.index)
     lines, links = [], []
     for m in sorted(matches, key=lambda m: order.index(m["verdict"])):
         reasons = "; ".join(m.get("reasons") or ["(bez powodów)"])
         source = (m.get("facts") or {}).get("source", "")
         source_txt = f" [źródło danych: {source}]" if source else ""
         lines.append(f"[{m['portal']} → {m['verdict']}] {reasons}{source_txt}")
-        if m["verdict"] != "REJECTED":
+        if m["verdict"] != "REJECTED" and m.get("url"):
             links.append(m["url"])
-    first_url = links[0] if links else (matches[0]["url"] if matches else "")
+    first_url = links[0] if links else ""
     return best, "\n".join(lines), "\n".join(links), first_url
 
 
 def per_portal_matches(row) -> dict[str, tuple[str, str]]:
     """{portal: (werdykt, url)} dla kazdego portalu z verify_json.matches —
-    do osobnych, klikalnych kolumn per portal (na zyczenie: latwiejsze
-    skanowanie wzrokiem niz jeden blok tekstu, kluczowe przy skali 884 leadow)."""
+    do osobnych kolumn per portal. Link jest klikalny TYLKO dla dopasowan
+    nie-REJECTED z niepustym URL-em (patrz rendering nizej) — dla REJECTED
+    (wynajem/nieaktualne/inna nieruchomosc) i pustych URL-i pokazujemy sam
+    werdykt bez hiperlacza, zeby nie bylo klikalnych martwych/mylacych linkow."""
     try:
         vj = json.loads(row.get("verify_json") or "{}")
     except (TypeError, ValueError):
         vj = {}
     out = {}
     for m in vj.get("matches") or []:
-        out[m["portal"]] = (m["verdict"], m["url"])
+        out[m["portal"]] = (m["verdict"], m.get("url") or "")
     return out
 
 
@@ -236,6 +252,15 @@ def build(out_path: Path, status: str = "scored") -> None:
             if verdict is None:
                 pcell.value = "—"
                 pcell.font = Font(name=FONT, size=10, color="BFBFBF")
+            elif verdict == "REJECTED" or not url:
+                # NIE robimy klikalnego linku dla odrzuconych (wynajem/
+                # nieaktualne/inna nieruchomosc) ani przy pustym URL — sam
+                # znacznik "odrzucone", zeby nie bylo martwych/mylacych linkow
+                # (dokladnie to, na co skarzyl sie Adam)
+                p_fill, p_color, _ = VERDICT_STYLE.get(verdict or "REJECTED", ("FFC7CE", "9C0006", ""))
+                pcell.value = "✖ odrzucone" if verdict == "REJECTED" else "(brak linku)"
+                pcell.fill = PatternFill("solid", fgColor=p_fill)
+                pcell.font = Font(name=FONT, size=9, color=p_color)
             else:
                 p_fill, p_color, _ = VERDICT_STYLE.get(verdict, ("FFFFFF", "000000", verdict))
                 pcell.value = "ogłoszenie"

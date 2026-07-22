@@ -173,6 +173,21 @@ def _is_individual_listing(portal: str, url: str) -> bool:
     return bool(pattern.search(urllib.parse.urlparse(url).path))
 
 
+# Ogloszenia WYNAJMU — nasze leady to pozwolenia na BUDOWE (nowe budynki na
+# SPRZEDAZ), wiec ogloszenie o wynajem NIGDY nie jest ta inwestycja (to zwykle
+# istniejacy budynek wynajmowany przy tej samej ulicy). Zweryfikowane na zywo
+# (22.07.2026): OLX ma osobna kategorie "Domy do wynajecia" (cat_id 25), a
+# Morizon URL-e wynajmu maja "/oferta/wynajem-...". Filtrujemy je TWARDO,
+# zanim staną się dopasowaniem — to najczystszy sygnal "to nie nasz lead".
+# "wynaj" pokrywa: wynajem, wynajęcia (wynajecia), wynajmę (wynajme), na wynajem.
+_RENTAL_MARKERS = ("wynaj", "do-wynajecia", "na-wynajem")
+
+
+def _is_rental(url: str, title: str = "") -> bool:
+    hay = _norm(f"{url} {title}")
+    return any(marker in hay for marker in _RENTAL_MARKERS)
+
+
 # Typ nieruchomosci: dla zabudowy jednorodzinnej (szeregowa/blizniacza/
 # wolnostojaca) szukamy DOMU, nie mieszkania — Gratka/Domiporta/Morizon maja
 # osobne kategorie "dom" i "mieszkanie", a dopasowanie samej ulicy+miejscowosci
@@ -334,6 +349,8 @@ def _check_via_search_api(
     for r in results:
         url = r.get("url", "")
         title = r.get("title", "")
+        if not url:
+            continue
         blob = f"{title} {r.get('description', '')} {url}"
         if not _text_matches_all_tokens(blob, tokens):
             continue
@@ -341,6 +358,8 @@ def _check_via_search_api(
         if not portal or portal in matches:
             continue
         if not _is_individual_listing(portal, url):
+            continue
+        if _is_rental(url, title):  # wynajem — nigdy nie nasza inwestycja z pozwolenia
             continue
         if not _matches_property_type(title, blob, expected_type):
             continue
@@ -377,11 +396,14 @@ def _check_olx(query: str, expected_type: str | None = None, investor_core: str 
     for offer in offers:
         if offer.get("category", {}).get("type") != "real_estate":
             continue
+        url = offer.get("url") or ""
         title = offer.get("title", "")
-        blob = f"{title} {offer.get('description', '')} {offer.get('url', '')}"
+        if not url or _is_rental(url, title):  # pusty URL / wynajem (OLX kat. 25) — odrzuc
+            continue
+        blob = f"{title} {offer.get('description', '')} {url}"
         if _text_matches_all_tokens(blob, tokens) and _matches_property_type(title, blob, expected_type):
             return _Match(
-                url=offer.get("url"),
+                url=url,
                 investor_confirmed=_matches_investor(blob, investor_core),
                 olx_offer={k: offer.get(k) for k in ("params", "map", "created_time", "business")},
             )
