@@ -550,3 +550,68 @@ projekcie, wszystkie zielone**.
   wygenerować klucz API, najlepiej ograniczony wyłącznie do Places API.
   Dokładne stawki i limity: oficjalna strona cennika Google Cloud (mogą się
   zmieniać, nie warto tu wpisywać konkretnej liczby na sztywno).
+
+### Dodatek 3 — kreatywne metody matchowania inwestor↔strona (24.07.2026)
+
+Adam wskazał konkretny nietrafiony przypadek: "DOM GRANDE DEVELOPER
+Sp. z o.o." było oznaczone jako "brak strony", a ich rzeczywista strona to
+`https://grandedeveloper.pl/` (pierwszy wynik w Google). Zbadałem na żywo
+DLACZEGO to umknęło i przetestowałem kilka nowych metod. Ustalenia:
+
+**Dlaczego umknęło (dwa niezależne błędy):**
+1. Generowanie kandydatów próbowało tylko `domgrandedeveloper.pl` — nigdy
+   `grandedeveloper.pl` (deweloper porzucił generyczne "dom" w domenie).
+2. Nawet gdyby zgadło tę domenę — walidacja wymagała pełnej nazwy
+   "domgrandedeveloper" w treści, a oni brandują się jako samo "Grande
+   Developer". Strona ma za to w stopce KRS 0000800084, który w oficjalnym
+   rejestrze to "GRANDE DEWELOPER ... SPÓŁKA KOMANDYTOWA" — inna forma
+   prawna, ta sama marka. Klasyczny układ spółka-matka/operacyjna.
+
+**WDROŻONE (darmowe, oficjalne źródła, zero ryzyka ToS):**
+
+- ✅ **Generowanie kandydatów z porzucaniem wypełniaczy, z zachowaniem
+  kolejności** (`_guess_domain_bases`): próbuje pełną nazwę, nazwę bez słów
+  typu "dom"/"grupa"/"polska" (→ `grandedeveloper`), oraz sam token marki.
+  Kolejność tokenów zawsze zachowana ("grande developer", nie odwrotnie).
+- ✅ **Pętla KRS-ze-stopki → oficjalne API KRS** (`_confirm_via_footer_registry`):
+  po pobraniu kandydata wyciąga NIP/KRS ze stopki (polskie spółki mają
+  PRAWNY obowiązek je podawać), odpytuje darmowe, urzędowe
+  `api-krs.ms.gov.pl`, i porównuje markę z oficjalnej zarejestrowanej nazwy
+  z marką inwestora RWDZ. To mostkuje najtrudniejszy przypadek "marka !=
+  zarejestrowana nazwa". Zabezpieczenie: odpala tylko dla domen pokrywających
+  ≥2 tokeny nazwy (żeby pojedyncze generyczne słowo w domenie nie potwierdzało
+  przypadkowej firmy). Bonus: przy okazji zdobywamy NIP/KRS dewelopera.
+- ✅ **Zweryfikowane na żywo (24.07.2026)**: `grandedeveloper.pl` teraz
+  poprawnie znajdowane (prawdopodobna, przez KRS 0000800084 → wspólna marka
+  "grande"); dwa wcześniejsze fałszywe pozytywy (niemieckie top-investment.eu,
+  placeholder royaldevelopment.com) nadal poprawnie odrzucane; `mrdom.pl`
+  zachowane. 120 testów zielonych (12 nowych dla tej rundy).
+
+**PRZETESTOWANE NA ŻYWO, ale ODRZUCONE / zaproponowane jako OPCJA (tradeoffy):**
+
+- ⚠️ **Opcja A — darmowa wyszukiwarka jako warstwa odkrywania (DuckDuckGo
+  HTML)**: przetestowane na żywo — dla "DOM GRANDE DEVELOPER deweloper"
+  zwróciło `grandedeveloper.pl` jako **wynik #1**. ALE: po 1-2 zapytaniach
+  DDG zwraca HTTP 202 z ekranem "anomaly" (blokada). Nadaje się tylko z
+  agresywnym rate-limitingiem (1 zapytanie / kilka sekund, mały dzienny
+  budżet), jest w szarej strefie ToS. Płatna, solidna wersja tego to Brave
+  Search (już wpięty). **Rekomendacja: NIE jako główny mechanizm; ewentualnie
+  jako opcjonalny, mocno ograniczony fallback — decyzja Adama.**
+- ⚠️ **Opcja B — Certificate Transparency (crt.sh)**: publiczne logi
+  certyfikatów SSL, można pytać o domeny .pl zawierające token marki. Darmowe,
+  legalne, publiczne dane. ALE: w trakcie testu crt.sh zwracało HTTP 502
+  (ich serwis bywa przeciążony) — za mało niezawodne jako główne źródło.
+  **Rekomendacja: ewentualnie jako wzbogacenie listy kandydatów, gdy usługa
+  działa — nie jako fundament.**
+- 💡 **Opcja C — odwrócenie z ogłoszeń portalowych**: gdy `portal_check`
+  znajdzie POTWIERDZONE ogłoszenie (profil dewelopera na rynekpierwotny.pl /
+  "nowa inwestycja" na Otodom), te strony często zawierają link do własnej
+  strony dewelopera. Silne, bo to już zweryfikowany match. ALE: działa tylko
+  dla leadów JUŻ obecnych na portalach — a sensem narzędzia są leady "czyste"
+  (jeszcze bez ogłoszeń), więc pokrywa mniejszość. **Rekomendacja: wartościowy
+  dodatek w drugiej kolejności, jeśli Adam chce — niewielki zakres, ale
+  wysoka pewność tam, gdzie zadziała.**
+
+**Pozostałe ograniczenie**: bez numeru NIP inwestora z RWDZ nie da się
+odróżnić "ta sama firma w innej lokalizacji" od "inna firma o tej samej
+nazwie" (patrz mrdom.pl) — status "prawdopodobna" uczciwie to komunikuje.

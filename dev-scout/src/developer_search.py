@@ -12,12 +12,14 @@ skala statusu zamiast prostego znaleziono/nie).
    wysokie ryzyko falszywego trafienia (samo imie+nazwisko to za malo, zeby
    bezpiecznie znalezc "tej" osoby strone w internecie).
 2. DARMOWY sygnal, sprawdzany PIERWSZY, zero klucza API: zgadywanie domeny
-   wprost z nazwy inwestora (guess_developer_domain) — "TOP INVESTMENT Sp. z
-   o.o." -> probuje topinvestment.pl / top-investment.pl / .com.pl / .eu /
-   .com, pobiera strone i wymaga, zeby PELNA splaszczona nazwa (albo NIP,
-   jesli akurat znany) wystapila w tresci, zeby odrzucic strony parkingowe/
-   przypadkowe trafienia w cudza domene. Polskie male firmy bardzo czesto
-   rejestruja domene = nazwa firmy, wiec to zaskakująco skuteczny, zupelnie
+   wprost z nazwy inwestora (guess_developer_domain). Generuje kandydatow z
+   ZACHOWANIEM KOLEJNOSCI tokenow, w tym z porzuceniem slow-wypelniaczy
+   ("DOM GRANDE DEVELOPER" -> grandedeveloper.pl, porzucone "dom"), pobiera
+   strone i potwierdza jedna z trzech sciezek: (a) NIP inwestora w tresci,
+   (b) KRS/NIP ZE STOPKI strony -> oficjalne API KRS -> porownanie marki z
+   inwestorem RWDZ (mostkuje 'marka != zarejestrowana nazwa'), (c) pelna
+   nazwa w tresci + sygnal polskiej firmy. Polskie male firmy bardzo czesto
+   rejestruja domene = nazwa firmy, wiec to zaskakujaco skuteczny, zupelnie
    darmowy pierwszy strzal.
 3. PODSTAWOWY sygnal wymagajacy klucza: Google Places API (New) Text Search
    (lookup_website_via_places) — zapytanie "{nazwa} {miejscowosc}", i jesli
@@ -62,6 +64,8 @@ from pathlib import Path
 
 import requests
 import yaml
+
+from src import company_lookup  # oficjalne API KRS (lookup_krs_by_number) — brak cyklu importow
 
 log = logging.getLogger(__name__)
 
@@ -193,6 +197,28 @@ def _query_variants(investor: str) -> list[str]:
 # Zgadywanie domeny wprost z nazwy (patrz docstring modulu, krok 2) — zero
 # klucza API, TLD-y typowe dla polskich firm.
 _DOMAIN_GUESS_TLDS = (".pl", ".com.pl", ".eu", ".com")
+_MAX_DOMAIN_PROBES = 16  # gorna granica sond HTTP na inwestora (budzet czasu)
+
+# Slowa-WYPELNIACZE, ktore deweloperzy czesto POMIJAJA w domenie, mimo ze sa
+# w zarejestrowanej nazwie. Zweryfikowane na zywo (24.07.2026): "DOM GRANDE
+# DEVELOPER Sp. z o.o." ma domene grandedeveloper.pl — porzucone samo "dom".
+# UWAGA: NIE ma tu "developer/deweloper/invest" — te akurat czesto ZOSTAJA w
+# domenie (grandedeveloper.pl zachowal "developer"), wiec ich dropowanie
+# gubiloby prawdziwe trafienia.
+_DROPPABLE_FILLER = {
+    "dom", "domy", "grupa", "group", "polska", "firma", "przedsiebiorstwo",
+    "pph", "pw", "ppu", "zaklad", "spolka",
+}
+
+# Slowa (pol)generyczne — gdy WSPOLNE miedzy dwiema nazwami, NIE dowodza
+# jeszcze zwiazku (kazda druga firma deweloperska je ma). Uzywane do
+# wylowienia tokenow MARKI (patrz _brand_tokens) do porownan krzyzowych.
+_BRAND_GENERIC_TOKENS = _DROPPABLE_FILLER | {
+    "developer", "deweloper", "development", "invest", "investment",
+    "inwestycje", "inwestycja", "nieruchomosci", "budownictwo", "mieszkania",
+    "osiedle", "projekt", "construction", "building", "company", "estate",
+    "real", "house", "home", "bud",
+}
 
 # Fragmenty tresci typowe dla stron parkingowych/"domena na sprzedaz"/
 # placeholderow kreatorow stron — odrzucamy takie trafienia, zamiast
@@ -244,18 +270,105 @@ def _has_poland_specificity_signal(body_text: str, miejscowosc: str | None) -> b
     return diacritic_count >= 3
 
 
-def _guess_domain_candidates(name_core: str) -> list[str]:
-    """Domeny zgadywane WPROST z nazwy inwestora: splaszczona (bez spacji) i
-    z lacznikami miedzy slowami, x4 typowe TLD dla polskich firm. Polskie
-    male firmy bardzo czesto rejestruja domene = nazwa firmy, wiec to tani,
-    zaskakująco skuteczny pierwszy strzal bez zadnego klucza API."""
-    tokens = [t for t in name_core.split() if t]
+def _brand_tokens(core: str) -> set[str]:
+    """Tokeny MARKI (dystynktywne) — bez slow (pol)generycznych, zeby
+    porownania krzyzowe nie odpalaly na samym wspolnym 'developer'/'invest'."""
+    return {t for t in core.split() if len(t) >= 4 and t not in _BRAND_GENERIC_TOKENS}
+
+
+def _guess_domain_bases(name_core: str) -> list[str]:
+    """Rdzenie domen (bez TLD), od najpewniejszego. KLUCZOWE: zachowuje
+    ORYGINALNA kolejnosc tokenow ('grande developer', nie 'developer
+    grande'). Warianty (zweryfikowane na zywo, ze roznia sie w praktyce):
+    (a) pelna nazwa, (b) nazwa bez slow-wypelniaczy — to daje
+    grandedeveloper z 'dom grande developer', (c) sam token marki, gdy
+    wystarczajaco swoisty (>=5 znakow)."""
+    tokens = [t for t in name_core.split() if len(t) > 1]
     if not tokens:
         return []
-    flat = "".join(tokens)
-    hyphen = "-".join(tokens)
-    bases = [flat] if flat == hyphen else [flat, hyphen]
-    return [base + tld for base in bases for tld in _DOMAIN_GUESS_TLDS]
+    bases: list[str] = []
+
+    def add(seq: list[str]) -> None:
+        seq = [t for t in seq if t]
+        if not seq:
+            return
+        for b in ("".join(seq), "-".join(seq)):
+            if b not in bases:
+                bases.append(b)
+
+    add(tokens)
+    stripped = [t for t in tokens if t not in _DROPPABLE_FILLER]
+    if stripped != tokens:
+        add(stripped)
+    brand = sorted(_brand_tokens(name_core), key=len, reverse=True)
+    if brand and len(brand[0]) >= 5:
+        add([brand[0]])
+    return bases
+
+
+def _guess_domain_candidates(name_core: str) -> list[str]:
+    """Pelna lista domen-kandydatow (rdzen x TLD), od najpewniejszej,
+    przycieta do budzetu sond. Polskie male firmy bardzo czesto rejestruja
+    domene = nazwa firmy, wiec to tani, zaskakujaco skuteczny pierwszy
+    strzal bez zadnego klucza API."""
+    cands = [base + tld for base in _guess_domain_bases(name_core) for tld in _DOMAIN_GUESS_TLDS]
+    return cands[:_MAX_DOMAIN_PROBES]
+
+
+def _extract_registry_ids(text: str) -> dict:
+    """KRS/NIP wyciagniete z tresci strony (zwykle stopka). Polskie spolki
+    maja PRAWNY obowiazek podawac je na swojej stronie, wiec to niemal
+    zawsze obecny, mocny sygnal tozsamosci — kluczowy do potwierdzenia
+    domeny, gdy marka rozni sie od zarejestrowanej nazwy (patrz
+    _confirm_via_footer_registry)."""
+    ids: dict = {}
+    krs = re.search(r"KRS[:\s]*([0-9]{10})", text, re.IGNORECASE)
+    if krs:
+        ids["krs"] = krs.group(1)
+    nip = re.search(r"NIP[:\s]*([0-9]{3}[\s-]?[0-9]{2,3}[\s-]?[0-9]{2,3}[\s-]?[0-9]{2,3})", text, re.IGNORECASE)
+    if nip:
+        digits = re.sub(r"\D", "", nip.group(1))
+        if len(digits) == 10:
+            ids["nip"] = digits
+    return ids
+
+
+def _confirm_via_footer_registry(
+    body_text: str, investor: str, domain_base: str, known_nip: str | None, timeout: int = 15,
+) -> tuple[str, str] | None:
+    """(status, powod) albo None. Wyciaga KRS/NIP ze stopki strony i
+    weryfikuje w OFICJALNYM rejestrze KRS (api-krs.ms.gov.pl) — mostkuje
+    najtrudniejszy przypadek: marka na stronie != zarejestrowana nazwa
+    (zweryfikowane na zywo: grandedeveloper.pl ma w stopce KRS 0000800084 ->
+    oficjalnie 'GRANDE DEWELOPER ... sp.k.', co dzieli marke 'grande' z
+    inwestorem RWDZ 'DOM GRANDE DEVELOPER sp. z o.o.'). Rejestr jest
+    urzedowy, darmowy, bez klucza — najmocniejszy dostepny sygnal."""
+    ids = _extract_registry_ids(body_text)
+    known_nip_digits = re.sub(r"\D", "", known_nip) if known_nip else ""
+
+    # NIP inwestora (jesli znany z CEIDG/RWDZ) zgodny z NIP ze stopki -> tozsamosc
+    if known_nip_digits and ids.get("nip") == known_nip_digits:
+        return STATUS_CONFIRMED, "NIP inwestora zgodny z NIP w stopce strony (tożsamość)"
+
+    krs = ids.get("krs")
+    if not krs:
+        return None
+    try:
+        info = company_lookup.lookup_krs_by_number(krs, timeout=timeout)
+    except Exception:
+        return None
+    if not info.found or not info.name:
+        return None
+
+    if known_nip_digits and info.nip and re.sub(r"\D", "", info.nip) == known_nip_digits:
+        return STATUS_CONFIRMED, f"KRS {krs} ze stopki → NIP zgodny z inwestorem (rejestr KRS)"
+
+    shared = {t for t in (_brand_tokens(core_name(investor)) & _brand_tokens(core_name(info.name)))
+              if t in domain_base}
+    if shared:
+        return STATUS_LIKELY, (f"domena potwierdzona przez rejestr: KRS {krs} w stopce → "
+                               f"'{info.name}' dzieli markę {sorted(shared)} z inwestorem RWDZ")
+    return None
 
 
 def _looks_like_parking_page(text: str) -> bool:
@@ -288,45 +401,64 @@ def guess_developer_domain(
     (NIGDY status 'nie_znaleziono') gdy nic sensownego nie znaleziono —
     wolujacy (find_developer_site) ma wtedy probowac Places/Brave dalej.
 
-    WALIDACJA (dwuwarstwowa, obie warstwy WYMAGANE — patrz zlapane na zywo
-    falszywe pozytywy w komentarzach przy _PARKING_MARKERS i
-    _has_poland_specificity_signal): (1) PELNA splaszczona nazwa inwestora
-    (silny sygnal — wieloslowny, swoisty ciag, nie pojedyncze generyczne
-    slowo) ALBO NIP (jesli akurat znany) w tresci strony, ORAZ (2) jakis
-    sygnal "to naprawde polska firma" (NIP/KRS/'sp. z o.o.'/miejscowosc z
-    RWDZ/gestosc polskich znakow diakrytycznych) — sama nazwa NIE wystarcza,
-    bo homonimiczna zagraniczna firma tez moze ja zawierac. Bez NIP status
-    ograniczony do 'prawdopodobna', nigdy 'potwierdzona' — ten sam poziom
-    ostroznosci co reszta modulu (patrz _validate_nip)."""
+    WALIDACJA — kaskada trzech niezaleznych, coraz slabszych sciezek; kazda
+    z wlasnym zabezpieczeniem przeciw falszywym pozytywom zlapanym na zywo:
+      1. Znany NIP inwestora (z CEIDG/RWDZ) wprost w tresci -> potwierdzona.
+      2. REJESTR ZE STOPKI (patrz _confirm_via_footer_registry): KRS/NIP ze
+         strony -> oficjalne API KRS -> porownanie marki. Mostkuje przypadek
+         'marka != zarejestrowana nazwa' (grandedeveloper.pl <-> 'Dom Grande
+         Developer sp. z o.o.'). Tylko dla domen pokrywajacych >=2 tokeny
+         nazwy — guard przeciw trafieniu po jednym generycznym slowie.
+      3. PELNA splaszczona nazwa inwestora w tresci ORAZ sygnal 'to polska
+         firma' (patrz _has_poland_specificity_signal — odrzuca homonimiczna
+         zagraniczna firme, np. niemieckie 'TOP-Investment GmbH').
+    Status 'potwierdzona' zarezerwowany dla tozsamosci NIP; reszta ->
+    'prawdopodobna' (ten sam poziom ostroznosci co reszta modulu)."""
     name_c = core_name(investor)
     full_flat = re.sub(r"[^a-z0-9]", "", name_c)
     if len(full_flat) < 5:
         return None  # nazwa zbyt krotka/generyczna po splaszczeniu — zbyt ryzykowne zgadywanie
+    core_tokens = [t for t in name_c.split() if len(t) >= 3]
+    nip_digits = re.sub(r"\D", "", nip) if nip else ""
 
-    for domain in _guess_domain_candidates(name_c):
-        if _is_blocked_domain(domain):
-            continue
-        probed = _probe_domain(domain, timeout=timeout)
-        if probed is None:
-            continue
-        final_url, body_text = probed
-        if _is_blocked_domain(_domain_of(final_url)):
-            continue
-        body_flat = re.sub(r"[^a-z0-9]", "", _norm(body_text[:200_000]))
-        if full_flat not in body_flat:
-            continue
-        if not _has_poland_specificity_signal(body_text, miejscowosc):
-            continue  # nazwa pasuje, ale zero sygnalu "to polska firma" — zbyt ryzykowne (patrz TOP-Investment GmbH)
-        nip_digits = re.sub(r"\D", "", nip) if nip else ""
-        if nip_digits and nip_digits in re.sub(r"\D", "", body_text[:200_000]):
-            return DeveloperSite(
-                investor=investor, url=final_url, status=STATUS_CONFIRMED,
-                matched_on="zgadnięta domena z nazwy inwestora + NIP potwierdzony w treści strony",
-            )
-        return DeveloperSite(
-            investor=investor, url=final_url, status=STATUS_LIKELY,
-            matched_on="zgadnięta domena z nazwy inwestora, pełna nazwa + sygnał polskiej firmy potwierdzone w treści",
-        )
+    for base in _guess_domain_bases(name_c):
+        base_flat = re.sub(r"[^a-z0-9]", "", base)
+        coverage = sum(1 for t in core_tokens if t in base_flat)
+        for tld in _DOMAIN_GUESS_TLDS:
+            domain = base + tld
+            if _is_blocked_domain(domain):
+                continue
+            probed = _probe_domain(domain, timeout=timeout)
+            if probed is None:
+                continue
+            final_url, body_text = probed
+            if _is_blocked_domain(_domain_of(final_url)):
+                continue
+            sample = body_text[:200_000]
+
+            # 1) znany NIP inwestora wprost w tresci
+            if nip_digits and nip_digits in re.sub(r"\D", "", sample):
+                return DeveloperSite(
+                    investor=investor, url=final_url, status=STATUS_CONFIRMED,
+                    matched_on="zgadnięta domena z nazwy inwestora + NIP inwestora w treści strony",
+                )
+
+            # 2) rejestr ze stopki (KRS/NIP -> oficjalne API KRS); guard: domena
+            #    musi pokrywac >=2 tokeny nazwy, zeby pojedyncze generyczne
+            #    slowo w domenie nie odpalilo potwierdzenia rejestrowego
+            if coverage >= 2:
+                conf = _confirm_via_footer_registry(sample, investor, base_flat, nip, timeout=max(timeout, 15))
+                if conf is not None:
+                    status, reason = conf
+                    return DeveloperSite(investor=investor, url=final_url, status=status, matched_on=reason)
+
+            # 3) pelna nazwa inwestora w tresci + sygnal polskiej firmy
+            body_flat = re.sub(r"[^a-z0-9]", "", _norm(sample))
+            if full_flat in body_flat and _has_poland_specificity_signal(body_text, miejscowosc):
+                return DeveloperSite(
+                    investor=investor, url=final_url, status=STATUS_LIKELY,
+                    matched_on="zgadnięta domena, pełna nazwa + sygnał polskiej firmy w treści",
+                )
     return None
 
 

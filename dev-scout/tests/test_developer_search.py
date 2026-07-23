@@ -563,3 +563,115 @@ def test_guess_developer_domain_uses_miejscowosc_to_confirm(monkeypatch):
     site = ds.guess_developer_domain("ZIELONY WOŁOMIN Sp. z o.o.", miejscowosc="Wołomin")
     assert site is not None
     assert site.status == ds.STATUS_LIKELY
+
+
+# --------------------------- generowanie kandydatow: kolejnosc + dropowanie wypelniaczy ---------------------------
+
+def test_guess_domain_bases_drops_filler_preserving_order():
+    """Regresja na przypadku zgloszonym przez Adama: 'DOM GRANDE DEVELOPER'
+    ma domene grandedeveloper.pl — porzucone 'dom', ale KOLEJNOSC 'grande
+    developer' zachowana (nie 'developer grande')."""
+    bases = ds._guess_domain_bases(ds.core_name("DOM GRANDE DEVELOPER Sp. z o.o."))
+    assert "grandedeveloper" in bases       # dropniete 'dom', kolejnosc zachowana
+    assert "domgrandedeveloper" in bases     # pelna nazwa tez wciaz probowana
+    assert "developergrande" not in bases    # NIGDY nie odwracamy kolejnosci
+
+
+def test_guess_domain_bases_adds_distinctive_single_token():
+    bases = ds._guess_domain_bases(ds.core_name("GRANDE DEVELOPER Sp. z o.o."))
+    assert "grande" in bases  # sam token marki jako oddzielny kandydat
+
+
+def test_brand_tokens_drops_generic_words():
+    assert ds._brand_tokens(ds.core_name("DOM GRANDE DEVELOPER Sp. z o.o.")) == {"grande"}
+    assert ds._brand_tokens(ds.core_name("ROYAL DEVELOPMENT Sp. z o.o.")) == {"royal"}
+
+
+# --------------------------- ekstrakcja identyfikatorow z rejestru ze stopki ---------------------------
+
+def test_extract_registry_ids_parses_krs_and_nip():
+    ids = ds._extract_registry_ids("Grodzisk Mazowiecki NIP 529 182 75 04 REGON 384154636 KRS 0000800084")
+    assert ids["krs"] == "0000800084"
+    assert ids["nip"] == "5291827504"  # znormalizowany, bez spacji
+
+
+def test_extract_registry_ids_empty_when_none():
+    assert ds._extract_registry_ids("zwykła treść strony bez identyfikatorów") == {}
+
+
+class _FakeKrsInfo:
+    def __init__(self, name, nip=None, found=True):
+        self.name = name
+        self.nip = nip
+        self.found = found
+
+
+def test_confirm_via_footer_registry_brand_overlap_is_likely(monkeypatch):
+    """Sedno rozwiazania zgloszonego przez Adama: KRS ze stopki -> oficjalna
+    nazwa dzieli markę z inwestorem RWDZ, mimo innej formy prawnej."""
+    monkeypatch.setattr(ds.company_lookup, "lookup_krs_by_number",
+                         lambda krs, timeout=15: _FakeKrsInfo("GRANDE DEWELOPER ADRIAN ZŁOTUCHA SPÓŁKA KOMANDYTOWA"))
+    body = "Grande Developer KRS 0000800084 Grodzisk Mazowiecki"
+    result = ds._confirm_via_footer_registry(body, "DOM GRANDE DEVELOPER Sp. z o.o.", "grandedeveloper", None)
+    assert result is not None
+    status, reason = result
+    assert status == ds.STATUS_LIKELY
+    assert "grande" in reason.lower()
+
+
+def test_confirm_via_footer_registry_nip_identity_is_confirmed(monkeypatch):
+    monkeypatch.setattr(ds.company_lookup, "lookup_krs_by_number",
+                         lambda krs, timeout=15: _FakeKrsInfo("INNA NAZWA SP Z O O", nip="5291827504"))
+    body = "Firma XYZ KRS 0000800084"
+    result = ds._confirm_via_footer_registry(body, "Firma XYZ Sp. z o.o.", "firmaxyz", "529-182-75-04")
+    assert result is not None
+    assert result[0] == ds.STATUS_CONFIRMED
+
+
+def test_confirm_via_footer_registry_no_overlap_returns_none(monkeypatch):
+    monkeypatch.setattr(ds.company_lookup, "lookup_krs_by_number",
+                         lambda krs, timeout=15: _FakeKrsInfo("ZUPELNIE INNA PIZZERIA SPÓŁKA KOMANDYTOWA"))
+    body = "Coś tam KRS 0000999999"
+    result = ds._confirm_via_footer_registry(body, "DOM GRANDE DEVELOPER Sp. z o.o.", "grandedeveloper", None)
+    assert result is None  # brak wspolnego tokenu marki -> nie potwierdzamy
+
+
+def test_guess_developer_domain_registry_footer_end_to_end(monkeypatch):
+    """Pelna regresja na zgloszonym przypadku: marka 'Grande Developer' na
+    stronie != zarejestrowana nazwa, ale KRS ze stopki mostkuje przez rejestr."""
+    def fake_probe(domain, timeout=8):
+        if domain == "grandedeveloper.pl":
+            return "https://grandedeveloper.pl/", "Grande Developer | Domy pod Warszawą KRS 0000800084"
+        return None
+
+    monkeypatch.setattr(ds, "_probe_domain", fake_probe)
+    monkeypatch.setattr(ds.company_lookup, "lookup_krs_by_number",
+                         lambda krs, timeout=15: _FakeKrsInfo("GRANDE DEWELOPER ADRIAN ZŁOTUCHA SPÓŁKA KOMANDYTOWA"))
+    site = ds.guess_developer_domain("DOM GRANDE DEVELOPER Sp. Z o.o.", miejscowosc="Grodzisk Mazowiecki")
+    assert site is not None
+    assert site.url == "https://grandedeveloper.pl/"
+    assert site.status == ds.STATUS_LIKELY
+    assert "KRS" in site.matched_on
+
+
+def test_guess_developer_domain_registry_path_guarded_by_coverage(monkeypatch):
+    """Guard: pojedyncze generyczne slowo w domenie (coverage<2) NIE odpala
+    potwierdzenia rejestrowego, nawet gdy strona ma jakis KRS."""
+    calls = []
+
+    def fake_probe(domain, timeout=8):
+        # tylko domena z pojedynczego tokenu 'grande' zyje
+        if domain == "grande.pl":
+            return "https://grande.pl/", "Grande Pizza KRS 0000111111"
+        return None
+
+    def fake_krs(krs, timeout=15):
+        calls.append(krs)
+        return _FakeKrsInfo("GRANDE PIZZA SPÓŁKA KOMANDYTOWA")
+
+    monkeypatch.setattr(ds, "_probe_domain", fake_probe)
+    monkeypatch.setattr(ds.company_lookup, "lookup_krs_by_number", fake_krs)
+    # 'dom grande developer' -> base 'grande' pokrywa tylko 1 token -> registry path pominiety
+    site = ds.guess_developer_domain("DOM GRANDE DEVELOPER Sp. z o.o.")
+    assert site is None
+    assert not calls  # lookup KRS nie zostal nawet wywolany dla domeny 1-tokenowej
