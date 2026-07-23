@@ -587,23 +587,36 @@ DLACZEGO to umknęło i przetestowałem kilka nowych metod. Ustalenia:
   placeholder royaldevelopment.com) nadal poprawnie odrzucane; `mrdom.pl`
   zachowane. 120 testów zielonych (12 nowych dla tej rundy).
 
-**PRZETESTOWANE NA ŻYWO, ale ODRZUCONE / zaproponowane jako OPCJA (tradeoffy):**
+**WDROŻONE na życzenie Adama (opcje A + B) — jako darmowe warstwy ODKRYWANIA,
+po zgadywaniu domeny, przed płatnymi Places/Brave. Każdy kandydat z A/B
+przechodzi TĘ SAMĄ walidację co zgadywanie (token marki w domenie + KRS-ze-
+stopki → oficjalne API), więc luźniejsze źródło nie luzuje kontroli fałszywych
+pozytywów. Konfigurowalne w `config.yaml` → `developer_search.enable_crtsh` /
+`enable_duckduckgo` (domyślnie oba `true`):**
 
-- ⚠️ **Opcja A — darmowa wyszukiwarka jako warstwa odkrywania (DuckDuckGo
-  HTML)**: przetestowane na żywo — dla "DOM GRANDE DEVELOPER deweloper"
-  zwróciło `grandedeveloper.pl` jako **wynik #1**. ALE: po 1-2 zapytaniach
-  DDG zwraca HTTP 202 z ekranem "anomaly" (blokada). Nadaje się tylko z
-  agresywnym rate-limitingiem (1 zapytanie / kilka sekund, mały dzienny
-  budżet), jest w szarej strefie ToS. Płatna, solidna wersja tego to Brave
-  Search (już wpięty). **Rekomendacja: NIE jako główny mechanizm; ewentualnie
-  jako opcjonalny, mocno ograniczony fallback — decyzja Adama.**
-- ⚠️ **Opcja B — Certificate Transparency (crt.sh)**: publiczne logi
-  certyfikatów SSL, można pytać o domeny .pl zawierające token marki. Darmowe,
-  legalne, publiczne dane. ALE: w trakcie testu crt.sh zwracało HTTP 502
-  (ich serwis bywa przeciążony) — za mało niezawodne jako główne źródło.
-  **Rekomendacja: ewentualnie jako wzbogacenie listy kandydatów, gdy usługa
-  działa — nie jako fundament.**
-- 💡 **Opcja C — odwrócenie z ogłoszeń portalowych**: gdy `portal_check`
+- ✅ **Opcja A — DuckDuckGo HTML** (`_discover_via_duckduckgo`): darmowa
+  wyszukiwarka, rankuje po trafności (na żywo `grandedeveloper.pl` = wynik
+  #1). Blokuje po 1-2 zapytaniach (HTTP 202 "anomaly") — po wykryciu blokady
+  moduł wyłącza DDG na resztę przebiegu (`_ddg_blocked`, wzorzec jak
+  `_browser_unavailable`), łagodny `sleep` między zapytaniami. Szara strefa
+  ToS — stąd flaga w configu, gdyby Adam chciał wyłączyć. Solidna płatna
+  wersja tego to Brave (już wpięty jako krok 5).
+- ✅ **Opcja B — Certificate Transparency (crt.sh)** (`_discover_via_crtsh`):
+  publiczne logi SSL, zapytanie po najbardziej swoistym rdzeniu marki
+  (≥8 znaków — inaczej za dużo szumu). Zwraca realne istniejące domeny, też
+  nietypowe TLD/pisownie. Bywa przeciążone (HTTP 502) — przy każdym błędzie
+  po prostu pomijane (graceful, zwraca `[]`).
+- ✅ **Zweryfikowane na żywo na 10 nowych leadach z 2025 (24.07.2026)**:
+  wszystkie 10 poprawnie `nie_znaleziono` — ZERO fałszywych pozytywów. W tym
+  ważny przypadek: "J. R. PLEWIŃSCY Sp. z o.o." (Grodzisk) — domena
+  `plewinscy.pl` istnieje (HTTP 200), ale to **kancelaria prawna w Poznaniu**
+  (homonim nazwiska, inna branża, inne miasto). System słusznie jej NIE
+  skojarzył (brak sygnału polskiej firmy deweloperskiej + brak KRS zgodnego z
+  marką). "MRM Sp. z o.o." — 3-literowa nazwa, poniżej progu bezpiecznego
+  zgadywania (celowo pominięte). DDG zablokował się po pierwszym zapytaniu i
+  poprawnie wyłączył na resztę przebiegu.
+
+- 💡 **Opcja C — odwrócenie z ogłoszeń portalowych** (NIEwdrożone, do decyzji): gdy `portal_check`
   znajdzie POTWIERDZONE ogłoszenie (profil dewelopera na rynekpierwotny.pl /
   "nowa inwestycja" na Otodom), te strony często zawierają link do własnej
   strony dewelopera. Silne, bo to już zweryfikowany match. ALE: działa tylko

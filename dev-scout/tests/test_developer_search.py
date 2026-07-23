@@ -19,6 +19,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src import developer_search as ds
 
+# oryginalne implementacje discovery (fixture ponizej podmienia je na stuby
+# zwracajace [], zeby find_developer_site nie ruszal sieci — dedykowane testy
+# tych funkcji wolaja te oryginaly wprost)
+_REAL_DISCOVER_CRTSH = ds._discover_via_crtsh
+_REAL_DISCOVER_DDG = ds._discover_via_duckduckgo
+
 
 class _FakeResp:
     def __init__(self, text="", status_code=200, url=""):
@@ -45,6 +51,11 @@ def _isolated_cache(tmp_path, monkeypatch):
     # dokladnie tak jak przed dodaniem tego kroku; testy ponizej dedykowane
     # zgadywaniu domeny nadpisuja to explicite
     monkeypatch.setattr(ds, "_probe_domain", lambda domain, timeout=8: None)
+    # darmowe warstwy odkrywania (crt.sh / DuckDuckGo) domyslnie NIC nie zwracaja
+    # w testach — zero sieci; dedykowane testy ponizej nadpisuja to explicite
+    monkeypatch.setattr(ds, "_discover_via_crtsh", lambda investor, timeout=15: [])
+    monkeypatch.setattr(ds, "_discover_via_duckduckgo", lambda investor, timeout=20: [])
+    monkeypatch.setattr(ds, "_ddg_blocked", False, raising=False)
 
 
 # --------------------------- is_individual / core_name ---------------------------
@@ -675,3 +686,139 @@ def test_guess_developer_domain_registry_path_guarded_by_coverage(monkeypatch):
     site = ds.guess_developer_domain("DOM GRANDE DEVELOPER Sp. z o.o.")
     assert site is None
     assert not calls  # lookup KRS nie zostal nawet wywolany dla domeny 1-tokenowej
+
+
+# --------------------------- Opcja B: crt.sh (Certificate Transparency) ---------------------------
+
+class _FakeCrtResp:
+    def __init__(self, status_code=200, payload=None, raise_json=False):
+        self.status_code = status_code
+        self._payload = payload or []
+        self._raise_json = raise_json
+
+    def json(self):
+        if self._raise_json:
+            raise ValueError("nie JSON")
+        return self._payload
+
+
+def test_discover_via_crtsh_parses_domains(monkeypatch):
+    payload = [
+        {"name_value": "grandedeveloper.pl\nwww.grandedeveloper.pl"},
+        {"name_value": "*.grandedeveloper.com"},
+        {"name_value": "grandedeveloper.pl"},  # duplikat
+    ]
+    monkeypatch.setattr(ds.requests, "get", lambda *a, **k: _FakeCrtResp(200, payload))
+    domains = _REAL_DISCOVER_CRTSH("DOM GRANDE DEVELOPER Sp. z o.o.")
+    assert "grandedeveloper.pl" in domains
+    assert "grandedeveloper.com" in domains
+    assert domains.count("grandedeveloper.pl") == 1  # deduplikacja + zdjete www./*.
+
+
+def test_discover_via_crtsh_seed_too_short_skips(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ds.requests, "get", lambda *a, **k: calls.append(1))
+    assert _REAL_DISCOVER_CRTSH("M4 Sp. z o.o.") == []  # 'm4' -> seed <8 znakow
+    assert not calls
+
+
+def test_discover_via_crtsh_http_502_graceful(monkeypatch):
+    monkeypatch.setattr(ds.requests, "get", lambda *a, **k: _FakeCrtResp(502))
+    assert _REAL_DISCOVER_CRTSH("GRANDE DEVELOPER Sp. z o.o.") == []
+
+
+def test_discover_via_crtsh_network_error_graceful(monkeypatch):
+    def boom(*a, **k):
+        raise ds.requests.RequestException("down")
+    monkeypatch.setattr(ds.requests, "get", boom)
+    assert _REAL_DISCOVER_CRTSH("GRANDE DEVELOPER Sp. z o.o.") == []
+
+
+# --------------------------- Opcja A: DuckDuckGo HTML ---------------------------
+
+class _FakeDdgResp:
+    def __init__(self, status_code=200, text=""):
+        self.status_code = status_code
+        self.text = text
+
+
+def test_discover_via_duckduckgo_parses_result_domains(monkeypatch):
+    monkeypatch.setattr(ds, "_ddg_blocked", False, raising=False)
+    html = ('<a href="/l/?uddg=https%3A%2F%2Fgrandedeveloper.pl%2F">x</a>'
+            '<a href="/l/?uddg=https%3A%2F%2Fwww.grandegroup.eu%2Fo-nas">y</a>')
+    monkeypatch.setattr(ds.requests, "post", lambda *a, **k: _FakeDdgResp(200, html))
+    monkeypatch.setattr(ds.time, "sleep", lambda *a: None)
+    domains = _REAL_DISCOVER_DDG("DOM GRANDE DEVELOPER Sp. z o.o.")
+    assert "grandedeveloper.pl" in domains
+    assert "grandegroup.eu" in domains  # www. zdjete przez _domain_of
+
+
+def test_discover_via_duckduckgo_anomaly_blocks_rest_of_run(monkeypatch):
+    monkeypatch.setattr(ds, "_ddg_blocked", False, raising=False)
+    monkeypatch.setattr(ds.requests, "post",
+                        lambda *a, **k: _FakeDdgResp(202, "Please try again... anomaly detected"))
+    monkeypatch.setattr(ds.time, "sleep", lambda *a: None)
+    assert _REAL_DISCOVER_DDG("GRANDE DEVELOPER Sp. z o.o.") == []
+    # po wykryciu blokady kolejne wywolania nie robia juz zadnego zapytania
+    calls = []
+    monkeypatch.setattr(ds.requests, "post", lambda *a, **k: calls.append(1))
+    assert _REAL_DISCOVER_DDG("INNA FIRMA Sp. z o.o.") == []
+    assert not calls
+
+
+def test_discover_via_duckduckgo_network_error_graceful(monkeypatch):
+    monkeypatch.setattr(ds, "_ddg_blocked", False, raising=False)
+    def boom(*a, **k):
+        raise ds.requests.RequestException("down")
+    monkeypatch.setattr(ds.requests, "post", boom)
+    assert _REAL_DISCOVER_DDG("GRANDE DEVELOPER Sp. z o.o.") == []
+
+
+# --------------------------- discovery -> ta sama walidacja ---------------------------
+
+def test_probe_and_classify_requires_brand_token_in_domain(monkeypatch):
+    # domena wyniku wyszukiwarki bez tokenu marki -> odrzucona jeszcze przed pobraniem
+    calls = []
+    monkeypatch.setattr(ds, "_probe_domain", lambda domain, timeout=8: calls.append(domain))
+    site = ds._probe_and_classify("GRANDE DEVELOPER Sp. z o.o.", "losowyportal.pl", None, None,
+                                  source_note="wynik DuckDuckGo", require_brand_in_domain=True)
+    assert site is None
+    assert not calls  # nie pobrano — domena nie zawiera 'grande'
+
+
+def test_probe_and_classify_discovery_confirmed_via_registry(monkeypatch):
+    monkeypatch.setattr(ds, "_probe_domain",
+                        lambda domain, timeout=8: ("https://grandedeveloper.pl/",
+                                                   "Grande Developer KRS 0000800084 Grodzisk"))
+    monkeypatch.setattr(ds.company_lookup, "lookup_krs_by_number",
+                        lambda krs, timeout=15: _FakeKrsInfo("GRANDE DEWELOPER ADRIAN ZŁOTUCHA SPÓŁKA KOMANDYTOWA"))
+    site = ds._probe_and_classify("DOM GRANDE DEVELOPER Sp. z o.o.", "grandedeveloper.pl", None, "Grodzisk Mazowiecki",
+                                  source_note="wynik crt.sh", require_brand_in_domain=True)
+    assert site is not None
+    assert site.status == ds.STATUS_LIKELY
+    assert site.url == "https://grandedeveloper.pl/"
+
+
+def test_find_developer_site_uses_crtsh_when_guess_fails(monkeypatch):
+    """crt.sh znajduje domene, ktorej zgadywanie nie trafilo -> walidacja przez rejestr."""
+    monkeypatch.setattr(ds, "_probe_domain",
+                        lambda domain, timeout=8: (("https://grandedeveloper.pl/",
+                                                    "Grande Developer KRS 0000800084 Grodzisk")
+                                                   if domain == "grandedeveloper.pl" else None))
+    monkeypatch.setattr(ds, "_discover_via_crtsh", lambda investor, timeout=15: ["grandedeveloper.pl"])
+    monkeypatch.setattr(ds, "_discover_via_duckduckgo", lambda investor, timeout=20: [])
+    monkeypatch.setattr(ds.company_lookup, "lookup_krs_by_number",
+                        lambda krs, timeout=15: _FakeKrsInfo("GRANDE DEWELOPER ADRIAN ZŁOTUCHA SPÓŁKA KOMANDYTOWA"))
+    site = ds.find_developer_site("DOM GRANDE DEVELOPER Sp. z o.o.", miejscowosc="Grodzisk Mazowiecki")
+    assert site.status == ds.STATUS_LIKELY
+    assert site.url == "https://grandedeveloper.pl/"
+
+
+def test_find_developer_site_discovery_toggles_off(monkeypatch):
+    """use_crtsh=False i use_duckduckgo=False -> discovery w ogole nie wolane."""
+    monkeypatch.setattr(ds, "_discover_via_crtsh",
+                        lambda investor, timeout=15: (_ for _ in ()).throw(AssertionError("crtsh nie powinno byc wolane")))
+    monkeypatch.setattr(ds, "_discover_via_duckduckgo",
+                        lambda investor, timeout=20: (_ for _ in ()).throw(AssertionError("ddg nie powinno byc wolane")))
+    site = ds.find_developer_site("NIEZNANA FIRMA Sp. z o.o.", use_crtsh=False, use_duckduckgo=False)
+    assert site.status == ds.STATUS_NOT_FOUND

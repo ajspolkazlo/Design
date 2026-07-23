@@ -21,16 +21,20 @@ skala statusu zamiast prostego znaleziono/nie).
    nazwa w tresci + sygnal polskiej firmy. Polskie male firmy bardzo czesto
    rejestruja domene = nazwa firmy, wiec to zaskakujaco skuteczny, zupelnie
    darmowy pierwszy strzal.
-3. PODSTAWOWY sygnal wymagajacy klucza: Google Places API (New) Text Search
-   (lookup_website_via_places) — zapytanie "{nazwa} {miejscowosc}", i jesli
-   Google zwroci niepuste websiteUri, od razu "potwierdzona" BEZ dodatkowej
-   walidacji tekstowej (Google juz zweryfikowal powiazanie firma<->strona
-   przez Google Moja Firma — silniejszy dowod niz cokolwiek, co da sie
-   wywnioskowac z wynikow wyszukiwarki tekstowej). Brak klucza API / brak
-   wyniku -> spada do kroku 4 (fallback), bez bledu.
-4. Fallback, gdy kroki 2-3 nic nie daly: dla spolek do 3 wariantow zapytania
-   do Brave Search, PRZERYWA na pierwszym, ktory daje wynik przechodzacy
-   filtry ponizej (budzet zapytan).
+3. DARMOWE warstwy ODKRYWANIA domen, gdy zgadywanie nie trafilo (opcje A/B,
+   bez klucza): (B) crt.sh — publiczne logi Certificate Transparency, zwraca
+   realne domeny z fragmentem marki; (A) DuckDuckGo HTML — darmowa
+   wyszukiwarka rankujaca po trafnosci. Kazdy zwrocony kandydat przechodzi
+   DOKLADNIE te sama walidacje co zgadywanie domeny (_probe_and_classify z
+   wymogiem tokenu marki w domenie) — luzniejsze zrodlo NIE luzuje kontroli
+   falszywych pozytywow. DDG blokuje po 1-2 zapytaniach -> wylacza sie na
+   resztę przebiegu.
+4. PODSTAWOWY sygnal wymagajacy klucza: Google Places API (New) Text Search
+   (lookup_website_via_places) — niepuste websiteUri -> "potwierdzona" BEZ
+   dodatkowej walidacji (Google juz zweryfikowal firma<->strona przez Google
+   Moja Firma). Brak klucza / brak wyniku -> spada do kroku 5.
+5. Fallback koncowy: dla spolek do 3 wariantow zapytania do Brave Search
+   (klucz), PRZERYWA na pierwszym wyniku przechodzacym filtry (budzet).
 5. Odrzuca domeny portali nieruchomosci (ta sama lista co portal_check.py) i
    krotka blocklist agregatorow/mediow z config.yaml. Facebook/LinkedIn/
    Instagram to fallback drugiej kategorii — nigdy glowny wynik.
@@ -58,6 +62,7 @@ import re
 import sqlite3
 import time
 import unicodedata
+import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -198,6 +203,22 @@ def _query_variants(investor: str) -> list[str]:
 # klucza API, TLD-y typowe dla polskich firm.
 _DOMAIN_GUESS_TLDS = (".pl", ".com.pl", ".eu", ".com")
 _MAX_DOMAIN_PROBES = 16  # gorna granica sond HTTP na inwestora (budzet czasu)
+_MAX_DISCOVERY_CANDIDATES = 8  # ile domen-kandydatow z crt.sh / DuckDuckGo probowac
+
+# Opcja B — Certificate Transparency (crt.sh): publiczne logi certyfikatow SSL,
+# darmowe, bez klucza. Zwraca realne, istniejace domeny zawierajace zadany
+# fragment marki (nawet nietypowe TLD/pisownie, ktorych zgadywanie nie trafi).
+# Bywa przeciazone (HTTP 502) — przy bledzie po prostu pomijamy (graceful).
+_CRTSH_URL = "https://crt.sh/"
+
+# Opcja A — DuckDuckGo HTML (darmowa wyszukiwarka jako warstwa odkrywania):
+# zwraca to, co znalazlby czlowiek szukajac (rankuje po trafnosci — na zywo
+# grandedeveloper.pl bylo wynikiem #1). ALE blokuje po 1-2 zapytaniach
+# (HTTP 202 "anomaly"), wiec: ostatni darmowy krok (po zgadywaniu i crt.sh),
+# lagodny sleep miedzy zapytaniami, a po wykryciu blokady — wylaczamy sie na
+# resztę przebiegu (wzorzec jak _browser_unavailable w portal_check).
+_DDG_URL = "https://html.duckduckgo.com/html/"
+_ddg_blocked = False  # ustawiane na True po wykryciu blokady (anomaly) — na czas procesu
 
 # Slowa-WYPELNIACZE, ktore deweloperzy czesto POMIJAJA w domenie, mimo ze sa
 # w zarejestrowanej nazwie. Zweryfikowane na zywo (24.07.2026): "DOM GRANDE
@@ -419,47 +440,140 @@ def guess_developer_domain(
     if len(full_flat) < 5:
         return None  # nazwa zbyt krotka/generyczna po splaszczeniu — zbyt ryzykowne zgadywanie
     core_tokens = [t for t in name_c.split() if len(t) >= 3]
-    nip_digits = re.sub(r"\D", "", nip) if nip else ""
 
     for base in _guess_domain_bases(name_c):
         base_flat = re.sub(r"[^a-z0-9]", "", base)
         coverage = sum(1 for t in core_tokens if t in base_flat)
         for tld in _DOMAIN_GUESS_TLDS:
-            domain = base + tld
-            if _is_blocked_domain(domain):
-                continue
-            probed = _probe_domain(domain, timeout=timeout)
-            if probed is None:
-                continue
-            final_url, body_text = probed
-            if _is_blocked_domain(_domain_of(final_url)):
-                continue
-            sample = body_text[:200_000]
-
-            # 1) znany NIP inwestora wprost w tresci
-            if nip_digits and nip_digits in re.sub(r"\D", "", sample):
-                return DeveloperSite(
-                    investor=investor, url=final_url, status=STATUS_CONFIRMED,
-                    matched_on="zgadnięta domena z nazwy inwestora + NIP inwestora w treści strony",
-                )
-
-            # 2) rejestr ze stopki (KRS/NIP -> oficjalne API KRS); guard: domena
-            #    musi pokrywac >=2 tokeny nazwy, zeby pojedyncze generyczne
-            #    slowo w domenie nie odpalilo potwierdzenia rejestrowego
-            if coverage >= 2:
-                conf = _confirm_via_footer_registry(sample, investor, base_flat, nip, timeout=max(timeout, 15))
-                if conf is not None:
-                    status, reason = conf
-                    return DeveloperSite(investor=investor, url=final_url, status=status, matched_on=reason)
-
-            # 3) pelna nazwa inwestora w tresci + sygnal polskiej firmy
-            body_flat = re.sub(r"[^a-z0-9]", "", _norm(sample))
-            if full_flat in body_flat and _has_poland_specificity_signal(body_text, miejscowosc):
-                return DeveloperSite(
-                    investor=investor, url=final_url, status=STATUS_LIKELY,
-                    matched_on="zgadnięta domena, pełna nazwa + sygnał polskiej firmy w treści",
-                )
+            site = _probe_and_classify(investor, base + tld, nip, miejscowosc,
+                                       source_note="zgadnięta domena z nazwy inwestora",
+                                       require_brand_in_domain=False, timeout=timeout)
+            if site is not None:
+                return site
     return None
+
+
+def _classify_candidate_page(
+    investor: str, final_url: str, body_text: str, nip: str | None, miejscowosc: str | None,
+    domain_base: str, coverage: int, source_note: str,
+) -> DeveloperSite | None:
+    """Wspolna walidacja strony-kandydata — uzywana przez WSZYSTKIE zrodla
+    (zgadywanie domeny, crt.sh, DuckDuckGo), zeby dyscyplina anty-falszywo-
+    pozytywowa byla identyczna niezaleznie od tego, skad wzieto domene.
+    Kaskada trzech coraz slabszych sciezek (patrz guess_developer_domain)."""
+    sample = body_text[:200_000]
+    nip_digits = re.sub(r"\D", "", nip) if nip else ""
+
+    # 1) znany NIP inwestora wprost w tresci -> tozsamosc
+    if nip_digits and nip_digits in re.sub(r"\D", "", sample):
+        return DeveloperSite(investor=investor, url=final_url, status=STATUS_CONFIRMED,
+                             matched_on=f"{source_note} + NIP inwestora w treści strony")
+
+    # 2) rejestr ze stopki; guard coverage>=2 (domena pokrywa >=2 tokeny nazwy)
+    if coverage >= 2:
+        conf = _confirm_via_footer_registry(sample, investor, domain_base, nip)
+        if conf is not None:
+            status, reason = conf
+            return DeveloperSite(investor=investor, url=final_url, status=status, matched_on=reason)
+
+    # 3) pelna nazwa inwestora w tresci + sygnal polskiej firmy
+    body_flat = re.sub(r"[^a-z0-9]", "", _norm(sample))
+    if full_flat_ok(investor, body_flat) and _has_poland_specificity_signal(sample, miejscowosc):
+        return DeveloperSite(investor=investor, url=final_url, status=STATUS_LIKELY,
+                             matched_on=f"{source_note}, pełna nazwa + sygnał polskiej firmy w treści")
+    return None
+
+
+def full_flat_ok(investor: str, body_flat: str) -> bool:
+    full_flat = re.sub(r"[^a-z0-9]", "", core_name(investor))
+    return bool(full_flat) and len(full_flat) >= 5 and full_flat in body_flat
+
+
+def _probe_and_classify(
+    investor: str, domain: str, nip: str | None, miejscowosc: str | None,
+    source_note: str, require_brand_in_domain: bool, timeout: int = 8,
+) -> DeveloperSite | None:
+    """Pobiera domene-kandydata i klasyfikuje przez _classify_candidate_page.
+    `require_brand_in_domain` (dla wynikow z crt.sh/DuckDuckGo): odrzuca
+    domeny, ktore nie zawieraja zadnego tokenu marki inwestora — chroni przed
+    'potwierdzeniem' losowego wyniku wyszukiwarki (np. artykulu/katalogu),
+    ktory tylko wspomina firme. Dla zgadywania domeny False (domena i tak
+    powstala z nazwy)."""
+    domain = domain.lower().strip()
+    if domain.startswith("www."):
+        domain = domain[4:]
+    if not domain or "." not in domain or _is_blocked_domain(domain):
+        return None
+    base_flat = re.sub(r"[^a-z0-9]", "", domain.split(".")[0])
+    core_tokens = [t for t in core_name(investor).split() if len(t) >= 3]
+    if require_brand_in_domain and not any(t in base_flat for t in _brand_tokens(core_name(investor))):
+        return None
+    coverage = sum(1 for t in core_tokens if t in base_flat)
+    probed = _probe_domain(domain, timeout=timeout)
+    if probed is None:
+        return None
+    final_url, body_text = probed
+    if _is_blocked_domain(_domain_of(final_url)):
+        return None
+    return _classify_candidate_page(investor, final_url, body_text, nip, miejscowosc,
+                                    base_flat, coverage, source_note)
+
+
+def _discover_via_crtsh(investor: str, timeout: int = 15) -> list[str]:
+    """OPCJA B — domeny-kandydaci z publicznych logow Certificate Transparency
+    (crt.sh). Darmowe, bez klucza, realne istniejace domeny. Zapytanie po
+    najbardziej swoistym rdzeniu marki (>=8 znakow — inaczej za duzo szumu).
+    Flaky (bywa HTTP 502) — przy jakimkolwiek bledzie zwraca [] (graceful)."""
+    tokens = [t for t in core_name(investor).split() if len(t) > 1]
+    stripped = [t for t in tokens if t not in _DROPPABLE_FILLER]
+    seed = "".join(stripped if len(stripped) >= 2 else tokens)
+    if len(seed) < 8:
+        return []
+    try:
+        resp = requests.get(_CRTSH_URL, params={"q": f"%{seed}%", "output": "json"},
+                            headers={"User-Agent": _UA}, timeout=timeout)
+        if resp.status_code != 200:
+            return []
+        data = resp.json()
+    except (requests.RequestException, ValueError):
+        return []
+    domains: list[str] = []
+    for entry in data:
+        for name in str(entry.get("name_value", "")).split("\n"):
+            name = name.strip().lower().lstrip("*.")
+            if name.startswith("www."):
+                name = name[4:]
+            if name and "." in name and " " not in name and name not in domains:
+                domains.append(name)
+    return domains[:_MAX_DISCOVERY_CANDIDATES]
+
+
+def _discover_via_duckduckgo(investor: str, timeout: int = 20) -> list[str]:
+    """OPCJA A — domeny-kandydaci z DuckDuckGo HTML (darmowa wyszukiwarka,
+    bez klucza). Rankuje po trafnosci (na zywo grandedeveloper.pl bylo #1).
+    Blokuje po 1-2 zapytaniach (HTTP 202 'anomaly') — po wykryciu blokady
+    wylaczamy sie na resztę przebiegu (_ddg_blocked), zeby nie spamowac."""
+    global _ddg_blocked
+    if _ddg_blocked:
+        return []
+    query = f'"{core_name(investor) or investor}" deweloper'
+    try:
+        resp = requests.post(_DDG_URL, data={"q": query}, headers={"User-Agent": _UA}, timeout=timeout)
+    except requests.RequestException:
+        return []
+    if resp.status_code == 202 or "anomaly" in resp.text[:2000].lower():
+        _ddg_blocked = True
+        log.info("developer_search: DuckDuckGo zablokowal zapytania (anomaly) — pomijam do konca przebiegu")
+        return []
+    if resp.status_code != 200:
+        return []
+    domains: list[str] = []
+    for enc in re.findall(r'uddg=([^&"]+)', resp.text):
+        d = _domain_of(urllib.parse.unquote(enc))
+        if d and d not in domains:
+            domains.append(d)
+    time.sleep(1.5)  # lagodny rate-limit miedzy zapytaniami
+    return domains[:_MAX_DISCOVERY_CANDIDATES]
 
 
 def _search_places(query: str, api_key: str, timeout: int = 15) -> list[dict]:
@@ -710,12 +824,17 @@ def _cache_put(conn: sqlite3.Connection, name_key: str, site: DeveloperSite) -> 
 
 # ------------------------------ glowna funkcja ------------------------------
 
-def find_developer_site(investor: str, nip: str | None = None, miejscowosc: str | None = None) -> DeveloperSite:
+def find_developer_site(
+    investor: str, nip: str | None = None, miejscowosc: str | None = None,
+    use_crtsh: bool = True, use_duckduckgo: bool = True,
+) -> DeveloperSite:
     """Punkt wejscia. `nip` opcjonalny (z company_lookup.CompanyInfo.nip,
-    jesli akurat znany) — wzmacnia walidacje sciezki Brave do statusu
-    'potwierdzona'. `miejscowosc` opcjonalna (z RWDZ) — uzywana do budowy
-    zapytania Google Places (patrz lookup_website_via_places), sygnalu
-    PODSTAWOWEGO sprawdzanego przed Brave Search."""
+    jesli akurat znany) — wzmacnia walidacje do statusu 'potwierdzona'.
+    `miejscowosc` opcjonalna (z RWDZ). `use_crtsh`/`use_duckduckgo` —
+    darmowe warstwy odkrywania domen (opcja B / A), domyslnie wlaczone.
+
+    Kolejnosc (darmowe najpierw): zgadywanie domeny -> crt.sh -> DuckDuckGo
+    -> Google Places (klucz) -> Brave (klucz)."""
     if not investor or not investor.strip():
         return DeveloperSite(investor=investor, status=STATUS_NOT_FOUND)
     if is_individual(investor):
@@ -735,6 +854,29 @@ def find_developer_site(investor: str, nip: str | None = None, miejscowosc: str 
         if guessed_site is not None:
             _cache_put(conn, name_key, guessed_site)
             return guessed_site
+
+        # DARMOWE warstwy ODKRYWANIA domen (opcja B: crt.sh, opcja A:
+        # DuckDuckGo) — kazdy zwrocony kandydat przechodzi TE SAMA rygorystyczna
+        # walidacje co zgadywanie domeny (_probe_and_classify z wymogiem tokenu
+        # marki w domenie), wiec luzniejsze zrodlo NIE luzuje kontroli
+        # falszywych pozytywow.
+        discovery = []
+        if use_crtsh:
+            discovery.append(("wynik crt.sh (Certificate Transparency)", _discover_via_crtsh))
+        if use_duckduckgo:
+            discovery.append(("wynik DuckDuckGo", _discover_via_duckduckgo))
+        for source_note, discover in discovery:
+            try:
+                candidate_domains = discover(investor)
+            except Exception:
+                log.warning("developer_search: %s nie powiodlo sie", source_note, exc_info=True)
+                continue
+            for domain in candidate_domains:
+                site = _probe_and_classify(investor, domain, nip, miejscowosc,
+                                           source_note=source_note, require_brand_in_domain=True)
+                if site is not None:
+                    _cache_put(conn, name_key, site)
+                    return site
 
         # Sygnal PODSTAWOWY: Google Places API — silniejszy niz Brave, bo
         # Google juz zweryfikowal firma<->strona przez Google Moja Firma.

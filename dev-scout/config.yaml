@@ -128,6 +128,15 @@ investor_filter:
   # pomijany (fallback do Brave).
   # Rejestracja/klucz: https://console.cloud.google.com/apis/library/places-backend.googleapis.com
 
+developer_search:
+  # Darmowe warstwy ODKRYWANIA strony dewelopera (src/developer_search.py) —
+  # sprawdzane po zgadywaniu domeny, a przed płatnymi Places/Brave. Każdy
+  # znaleziony kandydat przechodzi tę samą rygorystyczną walidację (token
+  # marki w domenie + NIP/KRS ze stopki → oficjalne API KRS), więc luźniejsze
+  # źródło NIE luzuje kontroli fałszywych pozytywów.
+  enable_crtsh: true       # Opcja B: Certificate Transparency (crt.sh) — publiczne logi SSL, bywa przeciążone (graceful)
+  enable_duckduckgo: true  # Opcja A: DuckDuckGo HTML — rankuje po trafności, ale blokuje po 1-2 zapytaniach (ToS-szara strefa)
+
 known_large_developers:
   # znani, duzi deweloperzy z pelnym budzetem marketingowym — odrzucamy od razu,
   # zeby nie zasmiecac wynikow oczywistosciami

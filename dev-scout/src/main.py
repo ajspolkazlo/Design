@@ -129,8 +129,11 @@ def step_enrich(cfg: dict) -> None:
         # statusu "potwierdzona"; bez niego kandydaty z dowodem domenowym
         # ladowane sa jako "prawdopodobna" najwyzej.
         try:
+            ds_cfg = cfg.get("developer_search") or {}
             dev_site = developer_search.find_developer_site(
-                lead["inwestor"] or "", nip=(info.nip if info else None), miejscowosc=lead["miejscowosc"])
+                lead["inwestor"] or "", nip=(info.nip if info else None), miejscowosc=lead["miejscowosc"],
+                use_crtsh=ds_cfg.get("enable_crtsh", True),
+                use_duckduckgo=ds_cfg.get("enable_duckduckgo", True))
         except Exception:
             log.exception("Nie udalo sie wyszukac strony dewelopera dla %s", lead["id_sprawy"])
             dev_site = developer_search.DeveloperSite(investor=lead["inwestor"] or "")
