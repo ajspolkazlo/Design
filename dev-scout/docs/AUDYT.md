@@ -616,14 +616,33 @@ pozytywów. Konfigurowalne w `config.yaml` → `developer_search.enable_crtsh` /
   zgadywania (celowo pominięte). DDG zablokował się po pierwszym zapytaniu i
   poprawnie wyłączył na resztę przebiegu.
 
-- 💡 **Opcja C — odwrócenie z ogłoszeń portalowych** (NIEwdrożone, do decyzji): gdy `portal_check`
-  znajdzie POTWIERDZONE ogłoszenie (profil dewelopera na rynekpierwotny.pl /
-  "nowa inwestycja" na Otodom), te strony często zawierają link do własnej
-  strony dewelopera. Silne, bo to już zweryfikowany match. ALE: działa tylko
-  dla leadów JUŻ obecnych na portalach — a sensem narzędzia są leady "czyste"
-  (jeszcze bez ogłoszeń), więc pokrywa mniejszość. **Rekomendacja: wartościowy
-  dodatek w drugiej kolejności, jeśli Adam chce — niewielki zakres, ale
-  wysoka pewność tam, gdzie zadziała.**
+- ✅ **Opcja C — WDROŻONE: odwrócenie z potwierdzonego ogłoszenia**
+  (`reverse_from_portal_match`, `_rynekpierwotny_developer_profile`). Gdy
+  `verify.py` już potwierdził (CONFIRMED/LIKELY — geometria+metraż+czas), że
+  konkretne ogłoszenie na RynekPierwotny odpowiada tej inwestycji z RWDZ,
+  strona profilu dewelopera na RynekPierwotny ma jawny link zewnętrzny.
+  **Zweryfikowane na żywo (24.07.2026)** na realnej ofercie
+  (`rynekpierwotny.pl/oferty/bud-rim-development/na-wspolnej-pruszkow-17635/`):
+  breadcrumb JSON-LD strony oferty wskazuje na profil dewelopera
+  (`/deweloperzy/{slug}/`), a profil ma `<a data-gtm-click="Odwiedź stronę
+  dewelopera" href="...">` + NIP w osadzonym JSON — dokładnie te pola
+  wyciąga nowy kod. Walidacja: zgodność NIP (jeśli znany) → potwierdzona;
+  inaczej wymóg wspólnej marki między nazwą dewelopera NA PORTALU a
+  inwestorem z RWDZ → prawdopodobna. REVIEW/REJECTED celowo pominięte (mogą
+  wskazywać na INNĄ nieruchomość).
+  **Ograniczenie**: sprawdzone na żywo TYLKO dla RynekPierwotny — próba
+  eksploracyjnego sprawdzenia Otodom zablokowana ochroną antybotową (HTTP
+  403 przy bezpośrednim wyszukiwaniu bez znanego URL-a), więc świadomie NIE
+  zgadywano jego struktury; zostaje wyłącznie RynekPierwotny, dopóki ktoś nie
+  zweryfikuje pozostałych portali na żywo.
+  **Ograniczenie praktyczne w tej sesji**: RynekPierwotny jest sprawdzany
+  przez `portal_check` TYLKO z backendem Search API (Brave, klucz) albo
+  browser (Playwright, domyślnie wyłączony) — bez klucza Brave ta opcja
+  nigdy nie odpali (portal w ogóle nie jest odpytywany), mimo że kod jest
+  gotowy i przetestowany. `main.py::step_enrich` przeniesiono tak, żeby
+  wyszukiwanie strony dewelopera działo się PO sprawdzeniu portali (a nie
+  przed, jak wcześniej), właśnie żeby Opcja C miała dostęp do już obliczonych
+  werdyktów dopasowań.
 
 **Pozostałe ograniczenie**: bez numeru NIP inwestora z RWDZ nie da się
 odróżnić "ta sama firma w innej lokalizacji" od "inna firma o tej samej

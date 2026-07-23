@@ -124,20 +124,6 @@ def step_enrich(cfg: dict) -> None:
             info_json = json.dumps({"found": False, "error": "lookup_failed"})
             info = None
 
-        # Strona dewelopera (Zadanie 3, patrz src/developer_search.py) — NIP
-        # (jesli akurat znany z KRS/CEIDG powyzej) wzmacnia walidacje do
-        # statusu "potwierdzona"; bez niego kandydaty z dowodem domenowym
-        # ladowane sa jako "prawdopodobna" najwyzej.
-        try:
-            ds_cfg = cfg.get("developer_search") or {}
-            dev_site = developer_search.find_developer_site(
-                lead["inwestor"] or "", nip=(info.nip if info else None), miejscowosc=lead["miejscowosc"],
-                use_crtsh=ds_cfg.get("enable_crtsh", True),
-                use_duckduckgo=ds_cfg.get("enable_duckduckgo", True))
-        except Exception:
-            log.exception("Nie udalo sie wyszukac strony dewelopera dla %s", lead["id_sprawy"])
-            dev_site = developer_search.DeveloperSite(investor=lead["inwestor"] or "")
-
         # Geokodowanie: ULDK (numer dzialki) PRZED Nominatim (adres). ULDK
         # zwraca dokladna geometrie dzialki katastralnej — dokladniejsze niz
         # dopasowanie po nazwie ulicy, i dziala NAWET GDY RWDZ nie ma
@@ -279,6 +265,22 @@ def step_enrich(cfg: dict) -> None:
                 on_portal_checked_at = presence.checked_at
             except Exception:
                 log.exception("Nie udalo sie sprawdzic portali dla %s", lead["id_sprawy"])
+
+        # Strona dewelopera (Zadanie 3, patrz src/developer_search.py) — UMYSLNIE
+        # PO sprawdzeniu portali (wyzej), zeby Opcja C (reverse_from_portal_match)
+        # mogla probowac odwrocic z JUZ potwierdzonego dopasowania na portalu,
+        # zanim zejdzie do zgadywania domeny/discovery/Places/Brave. NIP (jesli
+        # akurat znany z KRS/CEIDG) wzmacnia walidacje do statusu "potwierdzona".
+        try:
+            ds_cfg = cfg.get("developer_search") or {}
+            dev_site = developer_search.find_developer_site(
+                lead["inwestor"] or "", nip=(info.nip if info else None), miejscowosc=lead["miejscowosc"],
+                use_crtsh=ds_cfg.get("enable_crtsh", True),
+                use_duckduckgo=ds_cfg.get("enable_duckduckgo", True),
+                portal_matches=[{"portal": v.portal, "url": v.url, "verdict": v.verdict} for v in match_verdicts])
+        except Exception:
+            log.exception("Nie udalo sie wyszukac strony dewelopera dla %s", lead["id_sprawy"])
+            dev_site = developer_search.DeveloperSite(investor=lead["inwestor"] or "")
 
         verify_payload = {
             "parcel_id": parcel_id,

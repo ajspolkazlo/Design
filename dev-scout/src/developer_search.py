@@ -7,20 +7,30 @@ statusem pewnosci — nigdy nie udawac pewnosci, ktorej nie ma (stad 4-stopniowa
 skala statusu zamiast prostego znaleziono/nie).
 
 ============================= PRZEPLYW =============================
-1. Pomin calkowicie, gdy inwestor wyglada na OSOBE FIZYCZNA (brak sygnalow
+0. Pomin calkowicie, gdy inwestor wyglada na OSOBE FIZYCZNA (brak sygnalow
    spolki w nazwie — te same sygnaly co filters.looks_like_company) — zbyt
    wysokie ryzyko falszywego trafienia (samo imie+nazwisko to za malo, zeby
    bezpiecznie znalezc "tej" osoby strone w internecie).
-2. DARMOWY sygnal, sprawdzany PIERWSZY, zero klucza API: zgadywanie domeny
-   wprost z nazwy inwestora (guess_developer_domain). Generuje kandydatow z
-   ZACHOWANIEM KOLEJNOSCI tokenow, w tym z porzuceniem slow-wypelniaczy
-   ("DOM GRANDE DEVELOPER" -> grandedeveloper.pl, porzucone "dom"), pobiera
-   strone i potwierdza jedna z trzech sciezek: (a) NIP inwestora w tresci,
-   (b) KRS/NIP ZE STOPKI strony -> oficjalne API KRS -> porownanie marki z
-   inwestorem RWDZ (mostkuje 'marka != zarejestrowana nazwa'), (c) pelna
-   nazwa w tresci + sygnal polskiej firmy. Polskie male firmy bardzo czesto
-   rejestruja domene = nazwa firmy, wiec to zaskakujaco skuteczny, zupelnie
-   darmowy pierwszy strzal.
+1. OPCJA C, NAJSILNIEJSZY darmowy sygnal, gdy dostepny: ODWROCENIE z
+   POTWIERDZONEGO ogloszenia na portalu (reverse_from_portal_match) — gdy
+   verify.py juz potwierdzil (CONFIRMED/LIKELY, geometria+metraz+czas), ze
+   konkretne ogloszenie na RynekPierwotny odpowiada TEJ inwestycji z RWDZ,
+   strona profilu dewelopera na RynekPierwotny ma wprost link "Odwiedz
+   strone dewelopera" + NIP (zweryfikowane na zywo: kazda oferta ma
+   breadcrumb do /deweloperzy/{slug}/, ten profil ma jawny link zewnetrzny +
+   NIP w polu JSON). Wymaga dzialajacego dopasowania portalu (Brave/browser
+   backend) — w sesjach bez takiego backendu portal RynekPierwotny nigdy nie
+   jest sprawdzany, wiec ta sciezka nie odpali (udokumentowane ograniczenie).
+2. DARMOWY sygnal, zero klucza API: zgadywanie domeny wprost z nazwy
+   inwestora (guess_developer_domain). Generuje kandydatow z ZACHOWANIEM
+   KOLEJNOSCI tokenow, w tym z porzuceniem slow-wypelniaczy ("DOM GRANDE
+   DEVELOPER" -> grandedeveloper.pl, porzucone "dom"), pobiera strone i
+   potwierdza jedna z trzech sciezek: (a) NIP inwestora w tresci, (b) KRS/NIP
+   ZE STOPKI strony -> oficjalne API KRS -> porownanie marki z inwestorem
+   RWDZ (mostkuje 'marka != zarejestrowana nazwa'), (c) pelna nazwa w tresci
+   + sygnal polskiej firmy. Polskie male firmy bardzo czesto rejestruja
+   domene = nazwa firmy, wiec to zaskakujaco skuteczny, zupelnie darmowy
+   pierwszy strzal.
 3. DARMOWE warstwy ODKRYWANIA domen, gdy zgadywanie nie trafilo (opcje A/B,
    bez klucza): (B) crt.sh — publiczne logi Certificate Transparency, zwraca
    realne domeny z fragmentem marki; (A) DuckDuckGo HTML — darmowa
@@ -35,19 +45,21 @@ skala statusu zamiast prostego znaleziono/nie).
    Moja Firma). Brak klucza / brak wyniku -> spada do kroku 5.
 5. Fallback koncowy: dla spolek do 3 wariantow zapytania do Brave Search
    (klucz), PRZERYWA na pierwszym wyniku przechodzacym filtry (budzet).
-5. Odrzuca domeny portali nieruchomosci (ta sama lista co portal_check.py) i
+6. Odrzuca domeny portali nieruchomosci (ta sama lista co portal_check.py) i
    krotka blocklist agregatorow/mediow z config.yaml. Facebook/LinkedIn/
    Instagram to fallback drugiej kategorii — nigdy glowny wynik.
-6. Ranking (tylko sciezka Brave — kroki 2-3 nie potrzebuja rankingu): nazwa
+7. Ranking (tylko sciezka Brave — kroki 1-3 nie potrzebuja rankingu): nazwa
    domeny zawiera fragment marki inwestora (fuzzy) = najwyzszy priorytet;
    nazwa inwestora w tytule/opisie wyniku = sredni.
-7. Walidacja: krok 2 wymaga pelnej nazwy/NIP w tresci strony (patrz wyzej);
-   krok 3 (Places) ufa Google bez dodatkowej walidacji; krok 4 (Brave)
-   szuka NIP/KRS (jesli znany) w tresci kandydata. Wynik: "potwierdzona"
-   (krok 2/3 z sukcesem, ALBO krok 4 + NIP/KRS sie zgadza) / "prawdopodobna"
-   (krok 4, sama nazwa domeny) / "kandydat_niepewny" (krok 4, trafiono cos,
-   walidacja sie nie powiodla, LUB kandydat to Facebook/LinkedIn/Instagram) /
-   "brak_do_wyszukania_osoba_fizyczna" (krok 1) / "nie_znaleziono".
+8. Walidacja: krok 1 (portal) wymaga zgodnosci marki/NIP z profilem
+   dewelopera; krok 2 wymaga pelnej nazwy/NIP w tresci strony; krok 3
+   (Places) ufa Google bez dodatkowej walidacji; krok 4 (Brave) szuka
+   NIP/KRS (jesli znany) w tresci kandydata. Wynik: "potwierdzona" (krok
+   1/2/3 z sukcesem NIP, ALBO krok 4 + NIP/KRS sie zgadza) / "prawdopodobna"
+   (krok 1/2 bez NIP, krok 4 sama nazwa domeny) / "kandydat_niepewny" (krok
+   4, trafiono cos, walidacja sie nie powiodla, LUB kandydat to Facebook/
+   LinkedIn/Instagram) / "brak_do_wyszukania_osoba_fizyczna" (krok 0) /
+   "nie_znaleziono".
 8. Cache trwaly (SQLite) — osobne tabele dla Places (po nazwa+miejscowosc) i
    dla wyniku koncowego (po znormalizowanej nazwie, obejmuje tez kroki 2 i
    4). Wynik pozytywny bez wygasania, "nie znaleziono" z TTL 30 dni (nazwa
@@ -576,6 +588,89 @@ def _discover_via_duckduckgo(investor: str, timeout: int = 20) -> list[str]:
     return domains[:_MAX_DISCOVERY_CANDIDATES]
 
 
+# ======================= OPCJA C: odwrocenie z portalu =======================
+# Gdy verify.py juz potwierdzil (CONFIRMED/LIKELY) ze konkretne ogloszenie na
+# portalu odpowiada TEJ inwestycji z RWDZ, strona samego portalu czesto ma
+# link do wlasnej strony dewelopera. Zweryfikowane na zywo (24.07.2026) TYLKO
+# dla RynekPierwotny — profil dewelopera (link z breadcrumb JSON-LD kazdej
+# oferty) ma jawny <a data-gtm-click="Odwiedź stronę dewelopera" href="...">
+# oraz NIP w osadzonym JSON. Otodom/inne portale NIE zostaly zweryfikowane na
+# zywo w tej rundzie (blokada bot-protection przy eksploracyjnym scrapowaniu
+# bez znanego URL-a) — celowo NIE zgadujemy ich struktury, zostaje jedynie
+# RynekPierwotny, dopoki ktos nie zweryfikuje pozostalych na zywo.
+_RP_DEV_PROFILE_RE = re.compile(
+    r'"name":"([^"]+)","item":"(https://rynekpierwotny\.pl/deweloperzy/[^"]+)"'
+)
+_RP_DEV_WEBSITE_RE = re.compile(
+    r'data-gtm-click="Odwiedź stronę dewelopera"[^>]*href="([^"]+)"'
+)
+_RP_DEV_NIP_RE = re.compile(r'"nip":"(\d{10})"')
+
+
+def _rynekpierwotny_developer_profile(offer_url: str, timeout: int = 15) -> tuple[str, str] | None:
+    """(nazwa_dewelopera_na_portalu, url_profilu) wyciagniete z breadcrumb
+    JSON-LD strony oferty, albo None gdy nie znaleziono/blad sieciowy."""
+    try:
+        resp = requests.get(offer_url, headers={"User-Agent": _UA, "Accept-Language": "pl-PL"}, timeout=timeout)
+        resp.raise_for_status()
+    except requests.RequestException:
+        return None
+    m = _RP_DEV_PROFILE_RE.search(resp.text)
+    return (m.group(1), m.group(2)) if m else None
+
+
+def reverse_from_portal_match(
+    investor: str, portal: str, listing_url: str, verdict: str,
+    nip: str | None = None, timeout: int = 15,
+) -> DeveloperSite | None:
+    """OPCJA C — patrz docstring modulu, krok 1. Zwraca None (NIGDY
+    'nie_znaleziono') gdy nie da sie zastosowac albo walidacja marki/NIP sie
+    nie powiedzie — wolujacy probuje dalej (zgadywanie/discovery/Places/Brave).
+
+    Celowo TYLKO portal == 'rynekpierwotny' i verdict CONFIRMED/LIKELY —
+    REVIEW/REJECTED to dopasowania niepewne, ktore moga wskazywac na INNA
+    nieruchomosc, wiec ich deweloper nie musi byc naszym inwestorem (prefer
+    false negative)."""
+    if portal != "rynekpierwotny" or verdict not in ("CONFIRMED", "LIKELY") or not listing_url:
+        return None
+    profile = _rynekpierwotny_developer_profile(listing_url, timeout=timeout)
+    if profile is None:
+        return None
+    portal_dev_name, profile_url = profile
+    try:
+        resp = requests.get(profile_url, headers={"User-Agent": _UA, "Accept-Language": "pl-PL"}, timeout=timeout)
+        resp.raise_for_status()
+    except requests.RequestException:
+        return None
+    website_match = _RP_DEV_WEBSITE_RE.search(resp.text)
+    if not website_match:
+        return None
+    website = website_match.group(1).split("?")[0]  # bez utm_ parametrow portalu
+    if _is_blocked_domain(_domain_of(website)):
+        return None
+
+    profile_nip_match = _RP_DEV_NIP_RE.search(resp.text)
+    profile_nip = profile_nip_match.group(1) if profile_nip_match else None
+    known_nip_digits = re.sub(r"\D", "", nip) if nip else ""
+    if known_nip_digits and profile_nip == known_nip_digits:
+        return DeveloperSite(
+            investor=investor, url=website, status=STATUS_CONFIRMED,
+            matched_on=f"link ze zweryfikowanej oferty RynekPierwotny ('{portal_dev_name}') + NIP zgodny",
+        )
+
+    # brak znanego NIP inwestora do porownania -> wymagamy zgodnosci marki
+    # miedzy nazwa dewelopera NA PORTALU a inwestorem z RWDZ (ten sam
+    # wzorzec co _confirm_via_footer_registry)
+    shared = _brand_tokens(core_name(investor)) & _brand_tokens(core_name(portal_dev_name))
+    if not shared:
+        return None
+    return DeveloperSite(
+        investor=investor, url=website, status=STATUS_LIKELY,
+        matched_on=(f"link ze zweryfikowanej oferty RynekPierwotny — deweloper na portalu "
+                   f"'{portal_dev_name}' dzieli markę {sorted(shared)} z inwestorem RWDZ"),
+    )
+
+
 def _search_places(query: str, api_key: str, timeout: int = 15) -> list[dict]:
     """Google Places API (New) Text Search. fieldMask ograniczony do pol
     faktycznie potrzebnych (Places API rozlicza koszt zapytania czesciowo wg
@@ -827,14 +922,20 @@ def _cache_put(conn: sqlite3.Connection, name_key: str, site: DeveloperSite) -> 
 def find_developer_site(
     investor: str, nip: str | None = None, miejscowosc: str | None = None,
     use_crtsh: bool = True, use_duckduckgo: bool = True,
+    portal_matches: list[dict] | None = None,
 ) -> DeveloperSite:
     """Punkt wejscia. `nip` opcjonalny (z company_lookup.CompanyInfo.nip,
     jesli akurat znany) — wzmacnia walidacje do statusu 'potwierdzona'.
     `miejscowosc` opcjonalna (z RWDZ). `use_crtsh`/`use_duckduckgo` —
     darmowe warstwy odkrywania domen (opcja B / A), domyslnie wlaczone.
+    `portal_matches` — opcjonalna lista {"portal","url","verdict"} z JUZ
+    obliczonych dopasowan portalowych (patrz verify.py/main.py step_enrich) —
+    wlacza Opcje C (reverse_from_portal_match), NAJSILNIEJSZY dostepny darmowy
+    sygnal, gdy jest czego uzyc.
 
-    Kolejnosc (darmowe najpierw): zgadywanie domeny -> crt.sh -> DuckDuckGo
-    -> Google Places (klucz) -> Brave (klucz)."""
+    Kolejnosc (darmowe najpierw): odwrocenie z portalu (opcja C) ->
+    zgadywanie domeny -> crt.sh -> DuckDuckGo -> Google Places (klucz) ->
+    Brave (klucz)."""
     if not investor or not investor.strip():
         return DeveloperSite(investor=investor, status=STATUS_NOT_FOUND)
     if is_individual(investor):
@@ -847,7 +948,17 @@ def find_developer_site(
         if cached is not None:
             return DeveloperSite(investor=investor, url=cached.url, status=cached.status, matched_on=cached.matched_on)
 
-        # Sygnal DARMOWY, sprawdzany NAJPIERW: zgadywanie domeny wprost z
+        # OPCJA C, sprawdzana NAJPIERW gdy dostepna: odwrocenie z JUZ
+        # potwierdzonego dopasowania portalowego — patrz docstring modulu,
+        # krok 1, i reverse_from_portal_match.
+        for pm in (portal_matches or []):
+            reversed_site = reverse_from_portal_match(
+                investor, pm.get("portal", ""), pm.get("url", ""), pm.get("verdict", ""), nip=nip)
+            if reversed_site is not None:
+                _cache_put(conn, name_key, reversed_site)
+                return reversed_site
+
+        # Sygnal DARMOWY, sprawdzany NASTEPNIE: zgadywanie domeny wprost z
         # nazwy inwestora — zero klucza API, zero kosztu (patrz docstring
         # modulu, krok 2, i guess_developer_domain).
         guessed_site = guess_developer_domain(investor, nip=nip, miejscowosc=miejscowosc)

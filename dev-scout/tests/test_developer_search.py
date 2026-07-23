@@ -822,3 +822,120 @@ def test_find_developer_site_discovery_toggles_off(monkeypatch):
                         lambda investor, timeout=20: (_ for _ in ()).throw(AssertionError("ddg nie powinno byc wolane")))
     site = ds.find_developer_site("NIEZNANA FIRMA Sp. z o.o.", use_crtsh=False, use_duckduckgo=False)
     assert site.status == ds.STATUS_NOT_FOUND
+
+
+# --------------------------- Opcja C: odwrocenie z potwierdzonego ogloszenia ---------------------------
+
+# Fragmenty realnej struktury zweryfikowanej na zywo 24.07.2026 na
+# https://rynekpierwotny.pl/oferty/bud-rim-development/na-wspolnej-pruszkow-17635/
+_RP_OFFER_HTML = (
+    '{"@type":"ListItem","position":6,"name":"BUD-RIM Development",'
+    '"item":"https://rynekpierwotny.pl/deweloperzy/bud-rim-development-1002/"}'
+)
+_RP_PROFILE_HTML = (
+    '<a data-gtm-click="Odwiedź stronę dewelopera" class="x" '
+    'href="http://www.bud-rim.com.pl/?utm_campaign=prezentacja&amp;utm_medium=referral" '
+    'target="_blank" rel="nofollow">Odwiedź</a>'
+    '...."website":"http:\\u002F\\u002Fwww.bud-rim.com.pl\\u002F",'
+    '"related_vendors_comment":"","business_type":null,"nip":"1231302948"'
+)
+
+
+def _fake_get_rp(url, **kwargs):
+    if "/oferty/" in url:
+        return _FakeResp(text=_RP_OFFER_HTML, status_code=200)
+    if "/deweloperzy/" in url:
+        return _FakeResp(text=_RP_PROFILE_HTML, status_code=200)
+    return _FakeResp(status_code=404)
+
+
+def test_rynekpierwotny_developer_profile_parses_breadcrumb(monkeypatch):
+    monkeypatch.setattr(ds.requests, "get", _fake_get_rp)
+    result = ds._rynekpierwotny_developer_profile("https://rynekpierwotny.pl/oferty/bud-rim-development/x-17635/")
+    assert result == ("BUD-RIM Development", "https://rynekpierwotny.pl/deweloperzy/bud-rim-development-1002/")
+
+
+def test_reverse_from_portal_match_extracts_website_and_nip(monkeypatch):
+    monkeypatch.setattr(ds.requests, "get", _fake_get_rp)
+    site = ds.reverse_from_portal_match(
+        "BUD-RIM Development Sp. z o.o.", "rynekpierwotny",
+        "https://rynekpierwotny.pl/oferty/bud-rim-development/x-17635/", "CONFIRMED")
+    assert site is not None
+    assert site.url == "http://www.bud-rim.com.pl/"  # utm_ parametry ucięte
+    assert site.status == ds.STATUS_LIKELY  # brak znanego NIP inwestora do porownania -> tylko marka
+
+
+def test_reverse_from_portal_match_nip_match_is_confirmed(monkeypatch):
+    monkeypatch.setattr(ds.requests, "get", _fake_get_rp)
+    site = ds.reverse_from_portal_match(
+        "BUD-RIM Development Sp. z o.o.", "rynekpierwotny",
+        "https://rynekpierwotny.pl/oferty/bud-rim-development/x-17635/", "LIKELY",
+        nip="123-130-29-48")
+    assert site is not None
+    assert site.status == ds.STATUS_CONFIRMED
+
+
+def test_reverse_from_portal_match_rejects_review_verdict(monkeypatch):
+    """REVIEW/REJECTED to niepewne dopasowania — moga wskazywac na INNA
+    nieruchomosc, wiec deweloper z portalu NIE musi byc naszym inwestorem."""
+    calls = []
+    monkeypatch.setattr(ds.requests, "get", lambda *a, **k: calls.append(1))
+    assert ds.reverse_from_portal_match(
+        "BUD-RIM Development Sp. z o.o.", "rynekpierwotny", "https://rynekpierwotny.pl/oferty/x/", "REVIEW") is None
+    assert ds.reverse_from_portal_match(
+        "BUD-RIM Development Sp. z o.o.", "rynekpierwotny", "https://rynekpierwotny.pl/oferty/x/", "REJECTED") is None
+    assert not calls
+
+
+def test_reverse_from_portal_match_only_rynekpierwotny(monkeypatch):
+    """Otodom/inne portale NIE zostaly zweryfikowane na zywo — celowo
+    wylaczone, zeby nie zgadywac nieznanej struktury strony."""
+    calls = []
+    monkeypatch.setattr(ds.requests, "get", lambda *a, **k: calls.append(1))
+    assert ds.reverse_from_portal_match(
+        "BUD-RIM Development Sp. z o.o.", "otodom", "https://www.otodom.pl/oferta/x", "CONFIRMED") is None
+    assert not calls
+
+
+def test_reverse_from_portal_match_brand_mismatch_returns_none(monkeypatch):
+    """Deweloper na portalu nie dzieli marki z inwestorem RWDZ (i brak
+    znanego NIP do porownania) -> nie potwierdzamy (moze byc inna firma)."""
+    monkeypatch.setattr(ds.requests, "get", _fake_get_rp)
+    site = ds.reverse_from_portal_match(
+        "ZUPEŁNIE INNA FIRMA Sp. z o.o.", "rynekpierwotny",
+        "https://rynekpierwotny.pl/oferty/bud-rim-development/x-17635/", "CONFIRMED")
+    assert site is None
+
+
+def test_reverse_from_portal_match_no_breadcrumb_returns_none(monkeypatch):
+    monkeypatch.setattr(ds.requests, "get", lambda *a, **k: _FakeResp(text="brak breadcrumb", status_code=200))
+    assert ds.reverse_from_portal_match(
+        "BUD-RIM Development Sp. z o.o.", "rynekpierwotny",
+        "https://rynekpierwotny.pl/oferty/x/", "CONFIRMED") is None
+
+
+def test_find_developer_site_uses_portal_reversal_before_domain_guessing(monkeypatch):
+    """Opcja C ma priorytet nad zgadywaniem domeny — gdy dziala, reszta
+    kaskady (zgadywanie/discovery/Places/Brave) w ogole nie jest wolana."""
+    monkeypatch.setattr(ds.requests, "get", _fake_get_rp)
+    guess_calls = []
+    monkeypatch.setattr(ds, "_probe_domain", lambda domain, timeout=8: guess_calls.append(domain))
+    site = ds.find_developer_site(
+        "BUD-RIM Development Sp. z o.o.", miejscowosc="Pruszków",
+        portal_matches=[{"portal": "rynekpierwotny",
+                         "url": "https://rynekpierwotny.pl/oferty/bud-rim-development/x-17635/",
+                         "verdict": "CONFIRMED"}])
+    assert site.status == ds.STATUS_LIKELY
+    assert site.url == "http://www.bud-rim.com.pl/"
+    assert not guess_calls
+
+
+def test_find_developer_site_falls_back_when_portal_reversal_fails(monkeypatch):
+    """Brak dopasowan portalowych (typowy przypadek bez klucza Brave) ->
+    normalny fallback do zgadywania domeny, bez zmiany istniejacego zachowania."""
+    monkeypatch.setattr(ds, "_probe_domain",
+                        lambda domain, timeout=8: (("https://bud-rim.pl/", "BUD-RIM sp. z o.o. Grodzisk NIP")
+                                                   if domain == "bud-rim.pl" else None))
+    site = ds.find_developer_site("BUD-RIM Sp. z o.o.", miejscowosc="Grodzisk", portal_matches=[])
+    assert site.status == ds.STATUS_LIKELY
+    assert site.url == "https://bud-rim.pl/"
