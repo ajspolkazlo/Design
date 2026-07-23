@@ -21,9 +21,10 @@ from src import developer_search as ds
 
 
 class _FakeResp:
-    def __init__(self, text="", status_code=200):
+    def __init__(self, text="", status_code=200, url=""):
         self.text = text
         self.status_code = status_code
+        self.url = url
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -39,6 +40,11 @@ def _isolated_cache(tmp_path, monkeypatch):
     # maja wiec dzialac dokladnie tak jak przed dodaniem Zadania Places (krok
     # Places jest po prostu pomijany bez klucza, patrz lookup_website_via_places)
     monkeypatch.delenv(ds.GOOGLE_PLACES_API_KEY_ENV_VAR, raising=False)
+    # domyslnie zgadywanie domeny (krok bez klucza, patrz guess_developer_domain)
+    # nic nie znajduje — istniejace testy Brave/Places maja wiec dzialac
+    # dokladnie tak jak przed dodaniem tego kroku; testy ponizej dedykowane
+    # zgadywaniu domeny nadpisuja to explicite
+    monkeypatch.setattr(ds, "_probe_domain", lambda domain, timeout=8: None)
 
 
 # --------------------------- is_individual / core_name ---------------------------
@@ -384,3 +390,176 @@ def test_find_developer_site_falls_back_to_brave_when_places_empty(monkeypatch):
     site = ds.find_developer_site("TOP INVESTMENT Sp. z o.o.", miejscowosc="Piaseczno")
     assert site.status == ds.STATUS_LIKELY  # sciezka Brave, dowod domenowy bez NIP
     assert site.url == "https://topinvestment.pl/"
+
+
+# --------------------------- zgadywanie domeny: sygnal darmowy ---------------------------
+
+def test_guess_domain_candidates_flat_and_hyphenated():
+    candidates = ds._guess_domain_candidates(ds.core_name("TOP INVESTMENT Sp. z o.o."))
+    assert "topinvestment.pl" in candidates
+    assert "top-investment.pl" in candidates
+    assert "topinvestment.com.pl" in candidates
+    assert "topinvestment.eu" in candidates
+    assert "topinvestment.com" in candidates
+
+
+def test_guess_domain_candidates_single_token_no_duplicate():
+    candidates = ds._guess_domain_candidates(ds.core_name("Aranda Sp. z o.o."))
+    assert candidates.count("aranda.pl") == 1  # flat == hyphen dla jednego slowa, bez duplikatu
+
+
+def test_guess_developer_domain_too_short_name_skips_without_network(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ds, "_probe_domain", lambda domain, timeout=8: calls.append(domain))
+    site = ds.guess_developer_domain("M4 Sp. z o. o.")  # "m4" -> 2 znaki po splaszczeniu, za krotkie
+    assert site is None
+    assert not calls
+
+
+def test_guess_developer_domain_confirms_when_name_in_content(monkeypatch):
+    def fake_probe(domain, timeout=8):
+        if domain == "topinvestment.pl":
+            return "https://topinvestment.pl/", "Top Investment sp. z o.o. — mieszkania na sprzedaż w Piasecznie"
+        return None
+
+    monkeypatch.setattr(ds, "_probe_domain", fake_probe)
+    site = ds.guess_developer_domain("TOP INVESTMENT Sp. z o.o.")
+    assert site is not None
+    assert site.status == ds.STATUS_LIKELY  # bez NIP -> nie wyzej niz prawdopodobna
+    assert site.url == "https://topinvestment.pl/"
+
+
+def test_guess_developer_domain_confirms_with_nip(monkeypatch):
+    def fake_probe(domain, timeout=8):
+        if domain == "topinvestment.pl":
+            return "https://topinvestment.pl/", "Top Investment sp. z o.o., NIP 5291714728"
+        return None
+
+    monkeypatch.setattr(ds, "_probe_domain", fake_probe)
+    site = ds.guess_developer_domain("TOP INVESTMENT Sp. z o.o.", nip="5291714728")
+    assert site is not None
+    assert site.status == ds.STATUS_CONFIRMED
+    assert "NIP" in site.matched_on
+
+
+def test_guess_developer_domain_skips_parking_page(monkeypatch):
+    """Regresja: domena zyje (HTTP 200) ale to strona parkingowa/na sprzedaz
+    — NIE moze byc uznana za trafienie, nawet jesli przypadkiem zawiera
+    fragmenty nazwy w jakims boilerplate."""
+    def fake_probe(domain, timeout=8):
+        return None  # _probe_domain juz sam odrzuca parking (patrz _looks_like_parking_page) — tu symulujemy efekt
+
+    monkeypatch.setattr(ds, "_probe_domain", fake_probe)
+    assert ds.guess_developer_domain("TOP INVESTMENT Sp. z o.o.") is None
+
+
+def test_looks_like_parking_page_detects_common_markers():
+    assert ds._looks_like_parking_page("This domain is for sale. Contact us for a quote.")
+    assert ds._looks_like_parking_page("Ta domena jest na sprzedaż — zarezerwuj teraz.")
+    assert not ds._looks_like_parking_page("Top Investment sp. z o.o. — mieszkania na sprzedaż")
+
+
+def test_guess_developer_domain_content_without_name_falls_through(monkeypatch):
+    def fake_probe(domain, timeout=8):
+        return "https://topinvestment.pl/", "zupelnie niezwiazana tresc, bez nazwy inwestora"
+
+    monkeypatch.setattr(ds, "_probe_domain", fake_probe)
+    assert ds.guess_developer_domain("TOP INVESTMENT Sp. z o.o.") is None
+
+
+def test_guess_developer_domain_rejects_blocked_final_domain(monkeypatch):
+    # zgadnieta domena przekierowuje finalnie na portal nieruchomosci -> odrzucone
+    monkeypatch.setattr(ds, "_probe_domain",
+                         lambda domain, timeout=8: ("https://www.otodom.pl/", "Top Investment na Otodom"))
+    assert ds.guess_developer_domain("TOP INVESTMENT Sp. z o.o.") is None
+
+
+def test_find_developer_site_uses_domain_guess_before_places_and_brave(monkeypatch):
+    """Zgadywanie domeny daje wynik -> ani Places, ani Brave NIE sa odpytywane
+    (krok darmowy jest sprawdzany jako pierwszy, patrz docstring modulu)."""
+    monkeypatch.setenv(ds.GOOGLE_PLACES_API_KEY_ENV_VAR, "fake-places-key")
+
+    def fake_probe(domain, timeout=8):
+        if domain == "topinvestment.pl":
+            return "https://topinvestment.pl/", "Top Investment sp. z o.o. — mieszkania na sprzedaż"
+        return None
+
+    monkeypatch.setattr(ds, "_probe_domain", fake_probe)
+    places_calls, brave_calls = [], []
+    monkeypatch.setattr(ds, "_search_places", lambda *a, **k: places_calls.append(1))
+    monkeypatch.setattr(ds, "_search_brave", lambda *a, **k: brave_calls.append(1))
+
+    site = ds.find_developer_site("TOP INVESTMENT Sp. z o.o.", miejscowosc="Piaseczno")
+    assert site.status == ds.STATUS_LIKELY
+    assert site.url == "https://topinvestment.pl/"
+    assert not places_calls
+    assert not brave_calls
+
+
+def test_find_developer_site_falls_back_past_domain_guess_to_places(monkeypatch):
+    """Zgadywanie domeny nic nie znajduje -> normalny fallback do Places
+    (regresja: dodanie kroku darmowego nie zepsulo istniejacej sciezki)."""
+    monkeypatch.setenv(ds.GOOGLE_PLACES_API_KEY_ENV_VAR, "fake-places-key")
+    monkeypatch.setattr(ds, "_probe_domain", lambda domain, timeout=8: None)
+    monkeypatch.setattr(ds, "_search_places",
+                         lambda query, api_key, timeout=15: [{"websiteUri": "https://topinvestment.pl/"}])
+
+    site = ds.find_developer_site("TOP INVESTMENT Sp. z o.o.", miejscowosc="Piaseczno")
+    assert site.status == ds.STATUS_CONFIRMED
+    assert site.url == "https://topinvestment.pl/"
+
+
+# --------------------------- regresje na zywo zlapanych bledach (23.07.2026) ---------------------------
+
+def test_guess_developer_domain_regression_foreign_homonym_rejected(monkeypatch):
+    """Zlapane na zywo: 'TOP INVESTMENT Sp. z o.o.' (Grodzisk Mazowiecki)
+    zgadlo domene top-investment.eu, ktora nalezy do NIEMIECKIEGO
+    'TOP-Investment GmbH' — zupelnie inna firma o tej samej marce. Sama
+    obecnosc nazwy w tresci NIE moze wystarczyc bez zadnego polskiego
+    sygnalu (patrz _has_poland_specificity_signal)."""
+    def fake_probe(domain, timeout=8):
+        if domain == "top-investment.eu":
+            return "https://top-investment.eu/", "TOP-Investment GmbH — Impressum, Deutschland, Kontakt"
+        return None
+
+    monkeypatch.setattr(ds, "_probe_domain", fake_probe)
+    assert ds.guess_developer_domain("TOP INVESTMENT Sp. z o.o.") is None
+
+
+def test_guess_developer_domain_regression_website_builder_placeholder_rejected():
+    """Zlapane na zywo: 'ROYAL DEVELOPMENT SP Z O.O.' (Legionowo) zgadlo
+    domene royaldevelopment.com, ktora byla pustym szablonem kreatora stron
+    Dynadot ('GET STARTED', 'WEBSITE BUILDER') — nie realna strona firmy.
+    Pierwsza wersja _PARKING_MARKERS lapala tylko klasyczny "domain for
+    sale" i przepuszczala to jako trafienie."""
+    raw_html = "<html><body>ROYAL DEVELOPMENT home COVER HEADER GET STARTED DYNADOT WEBSITE BUILDER</body></html>"
+    assert ds._looks_like_parking_page(raw_html)
+
+
+def test_has_poland_specificity_signal_via_legal_form():
+    assert ds._has_poland_specificity_signal("Firma XYZ sp. z o.o., ul. Testowa 1", None)
+
+
+def test_has_poland_specificity_signal_via_miejscowosc():
+    assert ds._has_poland_specificity_signal("Nasza inwestycja w Grodzisku Mazowieckim", "Grodzisk Mazowiecki")
+
+
+def test_has_poland_specificity_signal_via_diacritics_density():
+    assert ds._has_poland_specificity_signal(
+        "mieszkania na sprzedaż, świetna lokalizacja, ładne wykończenie, więcej informacji wkrótce", None)
+
+
+def test_has_poland_specificity_signal_false_for_generic_foreign_text():
+    assert not ds._has_poland_specificity_signal("Welcome to our company website, contact us today", None)
+
+
+def test_guess_developer_domain_uses_miejscowosc_to_confirm(monkeypatch):
+    def fake_probe(domain, timeout=8):
+        if domain == "zielonywolomin.pl":
+            return "https://zielonywolomin.pl/", "Zielony Wolomin - nowa inwestycja w Wolominie"
+        return None
+
+    monkeypatch.setattr(ds, "_probe_domain", fake_probe)
+    site = ds.guess_developer_domain("ZIELONY WOŁOMIN Sp. z o.o.", miejscowosc="Wołomin")
+    assert site is not None
+    assert site.status == ds.STATUS_LIKELY

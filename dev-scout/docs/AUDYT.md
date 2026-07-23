@@ -490,3 +490,63 @@ spada na dotychczasową ścieżkę Brave bez żadnej zmiany w jej logice.
   błąd sieciowy nie trafia do cache, TTL). Zalecane: pierwszy żywy przebieg
   z realnym kluczem, żeby potwierdzić rzeczywisty format odpowiedzi Places
   API (New) zgadza się z założeniami z dokumentacji Google użytymi tutaj.
+
+### Dodatek 2 — zgadywanie domeny wprost z nazwy (sygnał DARMOWY, bez klucza)
+
+`developer_search.guess_developer_domain()` — sprawdzany JAKO PIERWSZY, przed
+Places i Brave, zero klucza API. Buduje kandydatów z samej nazwy inwestora
+(spłaszczona i z łącznikami, × `.pl`/`.com.pl`/`.eu`/`.com`), próbuje pobrać
+każdą, i wymaga **dwóch niezależnych warunków** zanim cokolwiek uzna za
+trafienie: (1) pełna spłaszczona nazwa inwestora w treści strony, ORAZ
+(2) jakiś sygnał "to naprawdę polska firma" (NIP/KRS/"sp. z o.o." w treści,
+nazwa miejscowości z RWDZ — dopasowana po rdzeniu, bo polskie nazwy się
+odmieniają — albo gęstość polskich znaków diakrytycznych).
+
+**Zweryfikowane na żywo (23.07.2026) na 5 realnych inwestorach z bazy —
+znalezione i naprawione DWA fałszywe pozytywy z pierwszej wersji:**
+
+1. `TOP INVESTMENT Sp. z o.o.` (Grodzisk Mazowiecki) zgadło domenę
+   `top-investment.eu`, która należy do **NIEMIECKIEGO** "TOP-Investment
+   GmbH" — zupełnie inna firma, sama marka po prostu też pasuje. Sama
+   obecność nazwy w treści NIE wystarczała — strona nie miała żadnego
+   polskiego sygnału. Naprawione warunkiem (2) powyżej.
+2. `ROYAL DEVELOPMENT SP Z O.O.` (Legionowo) zgadło domenę
+   `royaldevelopment.com`, która okazała się być **pustym szablonem
+   kreatora stron Dynadot** ("GET STARTED", "WEBSITE BUILDER") — nie
+   realną stroną firmy. Pierwsza wersja `_PARKING_MARKERS` łapała tylko
+   klasyczny "domain for sale" i to przepuszczała. Naprawione rozszerzeniem
+   listy markerów o frazy typowe dla placeholderów kreatorów stron.
+3. `MR DOM Sp. z o.o.` (Jabłonna) zgadło `mrdom.pl` — **realna polska
+   firma** (NIP zweryfikowany na stronie: 5862272041), ale sprzedająca
+   domy nad morzem w Gdyni/Mechelinkach, nie w Mazowieckiem. Może to być
+   ten sam podmiot działający w wielu lokalizacjach, może zupełnie inna
+   firma o tej samej (dość generycznej, 2-słowowej) nazwie — **bez numeru
+   NIP inwestora z RWDZ nie da się tego rozstrzygnąć algorytmicznie**.
+   Status pozostaje `prawdopodobna` (nigdy `potwierdzona` bez zgodności
+   NIP) — świadomie NIE dodano dodatkowej blokady “niezgodna
+   miejscowość”, bo firma deweloperska rzadko wymienia na stronie głównej
+   akurat miasto jednej konkretnej, mniejszej inwestycji z RWDZ; twardsza
+   reguła odcięłaby zbyt wiele prawdziwych trafień. **Udokumentowane
+   ograniczenie, nie błąd** — status "prawdopodobna" już uczciwie
+   komunikuje tę niepewność w legendzie Excela.
+
+Po obu naprawach ponowny żywy przebieg na tych samych 5 inwestorach: oba
+fałszywe pozytywy poprawnie zniknęły (`None` → spada dalej do Places/Brave),
+`mrdom.pl` pozostał jedynym trafieniem, poprawnie ograniczonym do
+`prawdopodobna`. 17 nowych testów (w tym 2 dosłowne regresje na złapanych
+przypadkach) w `tests/test_developer_search.py` — **110 testów w całym
+projekcie, wszystkie zielone**.
+
+**Co potrzeba od Adama, żeby włączyć płatne/kluczowane sygnały (opcjonalnie
+— zgadywanie domeny działa już teraz, bez niczego):**
+- `BRAVE_SEARCH_API_KEY` — rejestracja na https://api-dashboard.search.brave.com
+  (darmowy plan z miesięcznym limitem zapytań, bez wymogu polskiej
+  tożsamości). Ustawić jako zmienną środowiskową tam, gdzie faktycznie
+  uruchamiany jest pipeline (docelowo maszyna Adama z cronem, patrz
+  CLAUDE.md punkt 4) — nie ma potrzeby wklejać klucza na czacie.
+- `GOOGLE_PLACES_API_KEY` — wymaga projektu Google Cloud z włączonym
+  billingiem (Places API nie jest w 100% darmowe, ale ma comiesięczny
+  darmowy kredyt) — https://console.cloud.google.com/apis/library/places-backend.googleapis.com,
+  wygenerować klucz API, najlepiej ograniczony wyłącznie do Places API.
+  Dokładne stawki i limity: oficjalna strona cennika Google Cloud (mogą się
+  zmieniać, nie warto tu wpisywać konkretnej liczby na sztywno).

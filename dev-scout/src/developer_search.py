@@ -11,33 +11,41 @@ skala statusu zamiast prostego znaleziono/nie).
    spolki w nazwie — te same sygnaly co filters.looks_like_company) — zbyt
    wysokie ryzyko falszywego trafienia (samo imie+nazwisko to za malo, zeby
    bezpiecznie znalezc "tej" osoby strone w internecie).
-2. PODSTAWOWY sygnal: Google Places API (New) Text Search
+2. DARMOWY sygnal, sprawdzany PIERWSZY, zero klucza API: zgadywanie domeny
+   wprost z nazwy inwestora (guess_developer_domain) — "TOP INVESTMENT Sp. z
+   o.o." -> probuje topinvestment.pl / top-investment.pl / .com.pl / .eu /
+   .com, pobiera strone i wymaga, zeby PELNA splaszczona nazwa (albo NIP,
+   jesli akurat znany) wystapila w tresci, zeby odrzucic strony parkingowe/
+   przypadkowe trafienia w cudza domene. Polskie male firmy bardzo czesto
+   rejestruja domene = nazwa firmy, wiec to zaskakująco skuteczny, zupelnie
+   darmowy pierwszy strzal.
+3. PODSTAWOWY sygnal wymagajacy klucza: Google Places API (New) Text Search
    (lookup_website_via_places) — zapytanie "{nazwa} {miejscowosc}", i jesli
    Google zwroci niepuste websiteUri, od razu "potwierdzona" BEZ dodatkowej
    walidacji tekstowej (Google juz zweryfikowal powiazanie firma<->strona
    przez Google Moja Firma — silniejszy dowod niz cokolwiek, co da sie
    wywnioskowac z wynikow wyszukiwarki tekstowej). Brak klucza API / brak
-   wyniku -> spada do kroku 3 (fallback), bez bledu.
-3. Fallback, gdy Places nic nie dal: dla spolek do 3 wariantow zapytania do
-   Brave Search, PRZERYWA na pierwszym, ktory daje wynik przechodzacy filtry
-   ponizej (budzet zapytan).
-4. Odrzuca domeny portali nieruchomosci (ta sama lista co portal_check.py) i
+   wyniku -> spada do kroku 4 (fallback), bez bledu.
+4. Fallback, gdy kroki 2-3 nic nie daly: dla spolek do 3 wariantow zapytania
+   do Brave Search, PRZERYWA na pierwszym, ktory daje wynik przechodzacy
+   filtry ponizej (budzet zapytan).
+5. Odrzuca domeny portali nieruchomosci (ta sama lista co portal_check.py) i
    krotka blocklist agregatorow/mediow z config.yaml. Facebook/LinkedIn/
    Instagram to fallback drugiej kategorii — nigdy glowny wynik.
-5. Ranking (tylko sciezka Brave — Places nie potrzebuje rankingu, patrz
-   krok 2): nazwa domeny zawiera fragment marki inwestora (fuzzy) =
-   najwyzszy priorytet; nazwa inwestora w tytule/opisie wyniku = sredni.
-6. Walidacja (tylko sciezka Brave): pobiera strone glowna kandydata, szuka
-   NIP/KRS (jesli znany z company_lookup) w tresci. Wynik:
-   "potwierdzona" (Places z websiteUri, ALBO Brave + NIP/KRS sie zgadza) /
-   "prawdopodobna" (Brave, sama nazwa domeny) / "kandydat_niepewny" (Brave,
-   trafiono cos, walidacja sie nie powiodla, LUB kandydat to Facebook/
-   LinkedIn/Instagram) / "brak_do_wyszukania_osoba_fizyczna" (krok 1) /
-   "nie_znaleziono".
-7. Cache trwaly (SQLite) — osobne tabele dla Places (po nazwa+miejscowosc) i
-   dla wyniku koncowego (po znormalizowanej nazwie, obejmuje tez sciezke
-   Brave). Wynik pozytywny bez wygasania, "nie znaleziono" z TTL 30 dni
-   (nazwa moze pozniej dostac strone).
+6. Ranking (tylko sciezka Brave — kroki 2-3 nie potrzebuja rankingu): nazwa
+   domeny zawiera fragment marki inwestora (fuzzy) = najwyzszy priorytet;
+   nazwa inwestora w tytule/opisie wyniku = sredni.
+7. Walidacja: krok 2 wymaga pelnej nazwy/NIP w tresci strony (patrz wyzej);
+   krok 3 (Places) ufa Google bez dodatkowej walidacji; krok 4 (Brave)
+   szuka NIP/KRS (jesli znany) w tresci kandydata. Wynik: "potwierdzona"
+   (krok 2/3 z sukcesem, ALBO krok 4 + NIP/KRS sie zgadza) / "prawdopodobna"
+   (krok 4, sama nazwa domeny) / "kandydat_niepewny" (krok 4, trafiono cos,
+   walidacja sie nie powiodla, LUB kandydat to Facebook/LinkedIn/Instagram) /
+   "brak_do_wyszukania_osoba_fizyczna" (krok 1) / "nie_znaleziono".
+8. Cache trwaly (SQLite) — osobne tabele dla Places (po nazwa+miejscowosc) i
+   dla wyniku koncowego (po znormalizowanej nazwie, obejmuje tez kroki 2 i
+   4). Wynik pozytywny bez wygasania, "nie znaleziono" z TTL 30 dni (nazwa
+   moze pozniej dostac strone).
 """
 
 from __future__ import annotations
@@ -180,6 +188,146 @@ def _query_variants(investor: str) -> list[str]:
         f'"{name}" inwestycja mieszkaniowa',
         f'"{name}" mieszkania na sprzedaż',
     ]
+
+
+# Zgadywanie domeny wprost z nazwy (patrz docstring modulu, krok 2) — zero
+# klucza API, TLD-y typowe dla polskich firm.
+_DOMAIN_GUESS_TLDS = (".pl", ".com.pl", ".eu", ".com")
+
+# Fragmenty tresci typowe dla stron parkingowych/"domena na sprzedaz"/
+# placeholderow kreatorow stron — odrzucamy takie trafienia, zamiast
+# falszywie potwierdzac nieistniejaca jeszcze strone dewelopera. ROZSZERZONE
+# na zywo (23.07.2026): pierwsza wersja zlapala tylko klasyczny parking
+# ("domain for sale"), ale PRZEPUSCILA placeholder kreatora stron Dynadot
+# (royaldevelopment.com — pusty szablon z "GET STARTED"/"WEBSITE BUILDER"),
+# ktory tez trzeba bylo dopisac.
+_PARKING_MARKERS = (
+    "domain is for sale", "this domain may be for sale", "buy this domain",
+    "domain for sale", "ta domena jest na sprzedaz", "domena jest dostepna",
+    "zarezerwuj te domene", "parkingcrew", "sedoparking",
+    "future home of something quite cool",
+    "website builder", "dynadot", "wix.com", "squarespace",
+    "godaddy website builder", "strona w budowie", "witryna w budowie",
+    "under construction", "coming soon", "site not published",
+)
+
+# Sygnal "to naprawde polska firma", wymagany OBOK samej nazwy w tresci
+# (patrz guess_developer_domain) — zlapany na zywo falszywy pozytyw:
+# "TOP INVESTMENT Sp. z o.o." (Grodzisk Mazowiecki) zgadlo domene
+# top-investment.eu, ktora nalezy do NIEMIECKIEGO "TOP-Investment GmbH"
+# (zupelnie inna firma, sama nazwa marki po prostu tez pasuje) — sama
+# obecnosc pelnej nazwy w tresci NIE wystarczyla, strona nie miala zadnego
+# polskiego sygnalu (zero "sp. z o.o."/NIP/KRS, zero polskich znakow
+# diakrytycznych — za to bylo pelno "GmbH"/"Impressum").
+_POLISH_DIACRITICS = "ąćęłńóśźżĄĆĘŁŃÓŚŹŻ"
+
+
+def _has_poland_specificity_signal(body_text: str, miejscowosc: str | None) -> bool:
+    """Wymagane OBOK samej nazwy, zeby odrzucic homonimiczne zagraniczne
+    firmy (patrz komentarz wyzej) — NIP/KRS/forma prawna PL/miejscowosc z
+    RWDZ w tresci, ALBO wystarczajaca gestosc polskich znakow
+    diakrytycznych (GmbH/Impressum-owe strony niemieckie ich nie maja)."""
+    sample = body_text[:200_000]
+    sample_norm = _norm(sample)
+    if miejscowosc:
+        # dopasowanie po rdzeniu (pierwsze ~5 znakow tokenu), NIE dokladnym
+        # ciagu — polskie nazwy miejscowosci sie odmieniaja (np. "Grodzisk
+        # Mazowiecki" w tresci strony czesto wystapi jako "w Grodzisku
+        # Mazowieckim"), a dokladny substring by to przegapil
+        for token in _norm(miejscowosc).split():
+            stem_len = min(len(token), max(4, len(token) - 2))
+            if len(token) >= 4 and token[:stem_len] in sample_norm:
+                return True
+    if re.search(r"sp\.?\s*z\s*o\.?\s*o\.?|\bnip\b|\bkrs\b", sample, re.IGNORECASE):
+        return True
+    diacritic_count = sum(1 for ch in sample[:50_000] if ch in _POLISH_DIACRITICS)
+    return diacritic_count >= 3
+
+
+def _guess_domain_candidates(name_core: str) -> list[str]:
+    """Domeny zgadywane WPROST z nazwy inwestora: splaszczona (bez spacji) i
+    z lacznikami miedzy slowami, x4 typowe TLD dla polskich firm. Polskie
+    male firmy bardzo czesto rejestruja domene = nazwa firmy, wiec to tani,
+    zaskakująco skuteczny pierwszy strzal bez zadnego klucza API."""
+    tokens = [t for t in name_core.split() if t]
+    if not tokens:
+        return []
+    flat = "".join(tokens)
+    hyphen = "-".join(tokens)
+    bases = [flat] if flat == hyphen else [flat, hyphen]
+    return [base + tld for base in bases for tld in _DOMAIN_GUESS_TLDS]
+
+
+def _looks_like_parking_page(text: str) -> bool:
+    blob = _norm(text[:5000])
+    return any(marker in blob for marker in _PARKING_MARKERS)
+
+
+def _probe_domain(domain: str, timeout: int = 8) -> tuple[str, str] | None:
+    """(finalny_url, tresc_strony) gdy zgadnieta domena zyje i NIE wyglada na
+    strone parkingowa/na sprzedaz, inaczej None. Probuje bez i z 'www.'."""
+    for candidate in (f"https://{domain}/", f"https://www.{domain}/"):
+        try:
+            resp = requests.get(candidate, headers={"User-Agent": _UA, "Accept-Language": "pl-PL"},
+                                 timeout=timeout, allow_redirects=True)
+        except requests.RequestException:
+            continue
+        if resp.status_code >= 400:
+            continue
+        if _looks_like_parking_page(resp.text):
+            continue
+        return resp.url, resp.text
+    return None
+
+
+def guess_developer_domain(
+    investor: str, nip: str | None = None, miejscowosc: str | None = None, timeout: int = 8,
+) -> DeveloperSite | None:
+    """Sygnal DARMOWY, sprawdzany PIERWSZY (patrz docstring modulu, krok 2) —
+    zgaduje domene wprost z nazwy inwestora i probuje ja pobrac. Zwraca None
+    (NIGDY status 'nie_znaleziono') gdy nic sensownego nie znaleziono —
+    wolujacy (find_developer_site) ma wtedy probowac Places/Brave dalej.
+
+    WALIDACJA (dwuwarstwowa, obie warstwy WYMAGANE — patrz zlapane na zywo
+    falszywe pozytywy w komentarzach przy _PARKING_MARKERS i
+    _has_poland_specificity_signal): (1) PELNA splaszczona nazwa inwestora
+    (silny sygnal — wieloslowny, swoisty ciag, nie pojedyncze generyczne
+    slowo) ALBO NIP (jesli akurat znany) w tresci strony, ORAZ (2) jakis
+    sygnal "to naprawde polska firma" (NIP/KRS/'sp. z o.o.'/miejscowosc z
+    RWDZ/gestosc polskich znakow diakrytycznych) — sama nazwa NIE wystarcza,
+    bo homonimiczna zagraniczna firma tez moze ja zawierac. Bez NIP status
+    ograniczony do 'prawdopodobna', nigdy 'potwierdzona' — ten sam poziom
+    ostroznosci co reszta modulu (patrz _validate_nip)."""
+    name_c = core_name(investor)
+    full_flat = re.sub(r"[^a-z0-9]", "", name_c)
+    if len(full_flat) < 5:
+        return None  # nazwa zbyt krotka/generyczna po splaszczeniu — zbyt ryzykowne zgadywanie
+
+    for domain in _guess_domain_candidates(name_c):
+        if _is_blocked_domain(domain):
+            continue
+        probed = _probe_domain(domain, timeout=timeout)
+        if probed is None:
+            continue
+        final_url, body_text = probed
+        if _is_blocked_domain(_domain_of(final_url)):
+            continue
+        body_flat = re.sub(r"[^a-z0-9]", "", _norm(body_text[:200_000]))
+        if full_flat not in body_flat:
+            continue
+        if not _has_poland_specificity_signal(body_text, miejscowosc):
+            continue  # nazwa pasuje, ale zero sygnalu "to polska firma" — zbyt ryzykowne (patrz TOP-Investment GmbH)
+        nip_digits = re.sub(r"\D", "", nip) if nip else ""
+        if nip_digits and nip_digits in re.sub(r"\D", "", body_text[:200_000]):
+            return DeveloperSite(
+                investor=investor, url=final_url, status=STATUS_CONFIRMED,
+                matched_on="zgadnięta domena z nazwy inwestora + NIP potwierdzony w treści strony",
+            )
+        return DeveloperSite(
+            investor=investor, url=final_url, status=STATUS_LIKELY,
+            matched_on="zgadnięta domena z nazwy inwestora, pełna nazwa + sygnał polskiej firmy potwierdzone w treści",
+        )
+    return None
 
 
 def _search_places(query: str, api_key: str, timeout: int = 15) -> list[dict]:
@@ -447,6 +595,14 @@ def find_developer_site(investor: str, nip: str | None = None, miejscowosc: str 
         cached = _cache_get(conn, name_key)
         if cached is not None:
             return DeveloperSite(investor=investor, url=cached.url, status=cached.status, matched_on=cached.matched_on)
+
+        # Sygnal DARMOWY, sprawdzany NAJPIERW: zgadywanie domeny wprost z
+        # nazwy inwestora — zero klucza API, zero kosztu (patrz docstring
+        # modulu, krok 2, i guess_developer_domain).
+        guessed_site = guess_developer_domain(investor, nip=nip, miejscowosc=miejscowosc)
+        if guessed_site is not None:
+            _cache_put(conn, name_key, guessed_site)
+            return guessed_site
 
         # Sygnal PODSTAWOWY: Google Places API — silniejszy niz Brave, bo
         # Google juz zweryfikowal firma<->strona przez Google Moja Firma.
