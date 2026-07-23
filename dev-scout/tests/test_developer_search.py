@@ -939,3 +939,42 @@ def test_find_developer_site_falls_back_when_portal_reversal_fails(monkeypatch):
     site = ds.find_developer_site("BUD-RIM Sp. z o.o.", miejscowosc="Grodzisk", portal_matches=[])
     assert site.status == ds.STATUS_LIKELY
     assert site.url == "https://bud-rim.pl/"
+
+
+# --------------------------- regresja: jednowyrazowe generyczne nazwy ---------------------------
+
+def test_needs_strong_poland_signal_single_token():
+    assert ds._needs_strong_poland_signal("FOKUS SP. Z O.O.")
+    assert not ds._needs_strong_poland_signal("GLAM HOUSE Sp. z o.o.")
+
+
+def test_guess_developer_domain_regression_generic_single_word_rejected(monkeypatch):
+    """Zlapane na zywo (pelny przebieg 645 leadow, 24.07.2026): 'FOKUS Sp. z
+    o.o.' (generyczna, jednowyrazowa nazwa) zgadlo fokus.pl — SKLEP Z
+    SUKNIAMI WIECZOROWYMI, kompletnie niezwiazany. Strona ma naturalnie
+    wystarczajaca gestosc polskich znakow (to zwykla polska strona), wiec
+    stary fallback "same diakrytyki wystarcza" dawal falszywy pozytyw."""
+    def fake_probe(domain, timeout=8):
+        if domain == "fokus.pl":
+            return ("https://fokus.pl/",
+                    "Fokus - suknie wizytowe, sukienki wieczorowe, ślubne garsonki, torby, bluzki")
+        return None
+
+    monkeypatch.setattr(ds, "_probe_domain", fake_probe)
+    assert ds.guess_developer_domain("FOKUS SP. Z O.O.") is None
+
+
+def test_guess_developer_domain_single_word_still_matches_with_legal_form(monkeypatch):
+    """Kontrast: jednowyrazowa nazwa NADAL trafia, gdy strona ma jawny
+    sygnal 'sp. z o.o.'/NIP/KRS — tylko sam fallback diakrytykow jest
+    wylaczony dla generycznych nazw, nie caly kanal."""
+    def fake_probe(domain, timeout=8):
+        if domain == "domvia.pl":
+            return ("https://vizjapiaseczno.pl/",
+                    "wyrażam zgodę na przetwarzanie przez domvia sp. z o.o. moich danych")
+        return None
+
+    monkeypatch.setattr(ds, "_probe_domain", fake_probe)
+    site = ds.guess_developer_domain("DOMVIA SP.ZO.O.")
+    assert site is not None
+    assert site.url == "https://vizjapiaseczno.pl/"

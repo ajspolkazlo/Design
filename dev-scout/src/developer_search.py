@@ -281,11 +281,20 @@ _PARKING_MARKERS = (
 _POLISH_DIACRITICS = "ąćęłńóśźżĄĆĘŁŃÓŚŹŻ"
 
 
-def _has_poland_specificity_signal(body_text: str, miejscowosc: str | None) -> bool:
+def _has_poland_specificity_signal(body_text: str, miejscowosc: str | None, require_strong: bool = False) -> bool:
     """Wymagane OBOK samej nazwy, zeby odrzucic homonimiczne zagraniczne
     firmy (patrz komentarz wyzej) — NIP/KRS/forma prawna PL/miejscowosc z
     RWDZ w tresci, ALBO wystarczajaca gestosc polskich znakow
-    diakrytycznych (GmbH/Impressum-owe strony niemieckie ich nie maja)."""
+    diakrytycznych (GmbH/Impressum-owe strony niemieckie ich nie maja).
+
+    `require_strong=True` WYLACZA fallback samej gestosci diakrytykow —
+    zlapany na zywo falszywy pozytyw (24.07.2026): "FOKUS Sp. z o.o."
+    (jednowyrazowa, generyczna nazwa) zgadlo fokus.pl, ktore okazalo sie byc
+    SKLEPEM Z SUKNIAMI WIECZOROWYMI — kompletnie niezwiazana, ale rdzennie
+    polska strona z naturalnie wystarczajaca gestoscia polskich znakow, wiec
+    diakrytyki jako JEDYNY sygnal nie wystarczaja dla takich nazw. Uzywane
+    dla inwestorow z jednym (lub bardzo krotkim) tokenem marki — patrz
+    wolujacy (guess_developer_domain/_classify_candidate_page)."""
     sample = body_text[:200_000]
     sample_norm = _norm(sample)
     if miejscowosc:
@@ -299,8 +308,18 @@ def _has_poland_specificity_signal(body_text: str, miejscowosc: str | None) -> b
                 return True
     if re.search(r"sp\.?\s*z\s*o\.?\s*o\.?|\bnip\b|\bkrs\b", sample, re.IGNORECASE):
         return True
+    if require_strong:
+        return False
     diacritic_count = sum(1 for ch in sample[:50_000] if ch in _POLISH_DIACRITICS)
     return diacritic_count >= 3
+
+
+def _needs_strong_poland_signal(investor: str) -> bool:
+    """True gdy nazwa inwestora to jeden (albo zero) dystynktywny token —
+    zbyt duze ryzyko przypadkowego trafienia w niezwiazana polska firme o
+    tej samej, generycznej nazwie (patrz FOKUS -> fokus.pl), zeby ufac
+    samej gestosci polskich znakow diakrytycznych jako dowodowi."""
+    return len([t for t in core_name(investor).split() if len(t) > 1]) <= 1
 
 
 def _brand_tokens(core: str) -> set[str]:
@@ -488,9 +507,11 @@ def _classify_candidate_page(
             status, reason = conf
             return DeveloperSite(investor=investor, url=final_url, status=status, matched_on=reason)
 
-    # 3) pelna nazwa inwestora w tresci + sygnal polskiej firmy
+    # 3) pelna nazwa inwestora w tresci + sygnal polskiej firmy (require_strong
+    #    dla jednowyrazowych/generycznych nazw — patrz _needs_strong_poland_signal)
     body_flat = re.sub(r"[^a-z0-9]", "", _norm(sample))
-    if full_flat_ok(investor, body_flat) and _has_poland_specificity_signal(sample, miejscowosc):
+    strong = _needs_strong_poland_signal(investor)
+    if full_flat_ok(investor, body_flat) and _has_poland_specificity_signal(sample, miejscowosc, require_strong=strong):
         return DeveloperSite(investor=investor, url=final_url, status=STATUS_LIKELY,
                              matched_on=f"{source_note}, pełna nazwa + sygnał polskiej firmy w treści")
     return None

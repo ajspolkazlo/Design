@@ -647,3 +647,45 @@ pozytywów. Konfigurowalne w `config.yaml` → `developer_search.enable_crtsh` /
 **Pozostałe ograniczenie**: bez numeru NIP inwestora z RWDZ nie da się
 odróżnić "ta sama firma w innej lokalizacji" od "inna firma o tej samej
 nazwie" (patrz mrdom.pl) — status "prawdopodobna" uczciwie to komunikuje.
+
+### Dodatek 4 — pełny przebieg 645 leadów + falszywy pozytyw złapany na skali
+
+Po wdrożeniu opcji A/B/C uruchomiono pełny `enrich` + `score` na WSZYSTKICH
+pozostałych 645 leadach (poprzednio tylko próbki 12+10+10) — 154 minuty,
+zero błędów krytycznych (8 pojedynczych timeoutów sieciowych do OLX,
+obsłużone). Wynik: 677 leadów `scored`, 207 `rejected` (bez zmian).
+`developer_search`: 391 leadów miało nazwę inwestora (311 unikalnych firm),
+z czego **94 dostało status "prawdopodobna"** — pierwszy raz kod działał na
+takiej skali.
+
+**Ręczny przegląd próbki 15 losowych trafień znalazł kolejny, realny
+fałszywy pozytyw**: `FOKUS SP. Z O.O.` → `fokus.pl`, który okazał się być
+**sklepem z sukniami wieczorowymi**, kompletnie niezwiązanym. Przyczyna:
+"fokus" to pojedyncze, generyczne polskie słowo — strona przeszła walidację
+WYŁĄCZNIE przez fallback "wystarczająca gęstość polskich znaków
+diakrytycznych" (bo to zwykła polska strona), bez żadnego NIP/KRS/"sp. z
+o.o." w treści. Ten sam przegląd potwierdził też poprawny, nieoczywisty
+przypadek: `DOMVIA SP.ZO.O.` → `vizjapiaseczno.pl` (inna domena niż nazwa
+firmy!) — zgadnięta domena `domvia.pl` PRZEKIEROWUJE na branded stronę
+inwestycji, a walidacja poprawnie znalazła "domvia sp. z o.o." w stopce
+zgody RODO na stronie docelowej.
+
+**Naprawa**: `_needs_strong_poland_signal()` — dla inwestorów z jednym (albo
+zero) dystynktywnym tokenem w nazwie (jak "FOKUS", ale NIE "GLAM HOUSE")
+fallback samej gęstości diakrytyków jest WYŁĄCZONY; wymagany jest
+konkretny NIP/KRS/"sp. z o.o." w treści albo dopasowanie miejscowości z
+RWDZ (dopasowanie po rdzeniu słowa, odporne na odmianę — patrz `mjbud.eu`,
+które przeszło dzięki dosłownemu adresowi "05-091 Ząbki" na stronie, zgodnie
+z miejscowością inwestora).
+
+**Po naprawie ponownie zweryfikowano na żywo WSZYSTKICH 27 unikalnych
+inwestorów z jednowyrazową nazwą** wśród ówczesnych 94 trafień
+"prawdopodobna" (cache dla nich wyczyszczony, `find_developer_site`
+uruchomiony ponownie na świeżo): 7 poprawnie spadło do "nie_znaleziono"
+(w tym FOKUS), 2 przeskoczyły na INNĄ, mocniej zwalidowaną domenę tego
+samego wariantu nazwy (np. `trojkatna.pl`→`trojkatna.com`, oba żywe, ale
+tylko `.com` miało jawny sygnał lokalizacji w treści), 18 pozostało bez
+zmian (miały już solidny sygnał, nie tylko diakrytyki). Końcowy wynik:
+**84 trafienia "prawdopodobna"** (spadek z 94, po odsianiu słabych).
+3 nowe testy regresyjne z dokładną, żywą treścią strony FOKUS i DOMVIA.
+**143 testy zielone.**
