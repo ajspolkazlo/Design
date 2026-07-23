@@ -105,11 +105,78 @@ def extract_building_count(opis: object) -> int | None:
     return None
 
 
+def _levenshtein(a: str, b: str) -> int:
+    """Odleglosc edycyjna — bez zewnetrznych zaleznosci (male stringi, wiec
+    prosta implementacja O(n*m) w zupelnosci wystarcza)."""
+    if a == b:
+        return 0
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        curr = [i] + [0] * len(b)
+        for j, cb in enumerate(b, 1):
+            curr[j] = min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + (ca != cb))
+        prev = curr
+    return prev[-1]
+
+
+_WOLNOSTOJACY_STEM = "wolnostoj"
+
+
+def _has_wolnostojacy(text: object) -> bool:
+    """Wykrywa slowo 'wolnostojący' (w dowolnej odmianie) w opisie, z tolerancja
+    na literowki w danych zrodlowych RWDZ — zweryfikowane na zywo: te same
+    wnioski, ktore maja poprawnie napisane 'wolnostojący', potrafia miec
+    literowki w SASIEDNICH slowach ('MIESZKANY' zamiast 'MIESZKALNY', 'SACZELNE'
+    zamiast 'SZCZELNE'), wiec nie zakladamy poprawnej pisowni nigdzie."""
+    v = _norm(text)
+    if _WOLNOSTOJACY_STEM in v:
+        return True
+    # fuzzy fallback: PREFIKS slowa o dlugosci rdzenia, odlegloscia edycyjna
+    # <=2 od "wolnostoj" — porownujemy tylko prefiks (nie cale slowo z
+    # koncowka odmiany typu "-acy"/"-ego"/"-ych", ktora naturalnie zwieksza
+    # dystans i dawalaby falszywe negatywy dla poprawnie napisanych odmian)
+    stem_len = len(_WOLNOSTOJACY_STEM)
+    for w in v.split():
+        if 7 <= len(w) <= 16 and _levenshtein(w[:stem_len], _WOLNOSTOJACY_STEM) <= 2:
+            return True
+    return False
+
+
+def is_private_single_family_home(kategoria_obiektu: object, liczba_budynkow: int | None) -> bool:
+    """Twardy filtr (na zyczenie Adama, lipiec 2026): POJEDYNCZY budynek
+    mieszkalny jednorodzinny WOLNOSTOJĄCY to niemal zawsze osoba prywatna
+    budująca dom dla siebie, nie deweloper — zero wartości jako lead.
+
+    Odróżnienie od realnych leadów deweloperskich: inwestycja wielobudynkowa
+    zloz­ona z domów wolnostojących ("zespół 4 budynków wolnostojących") ZOSTAJE
+    — nikt nie buduje 4 osobnych domów dla siebie. Kryterium jest więc ŚCISŁE:
+    słowo "wolnostoj*" ORAZ liczba_budynkow == 1 (dokładnie, nie None — gdy
+    liczby nie da się ustalić, nie zgadujemy w żadną stronę, zgodnie z resztą
+    filtrów w tym module)."""
+    if liczba_budynkow != 1:
+        return False
+    return _has_wolnostojacy(kategoria_obiektu)
+
+
+def _norm_tight(text: object) -> str:
+    """Jak _norm, ale dodatkowo usuwa kropki i spacje — formy prawne spolek
+    maja mnostwo wariantow zapisu ('sp. z o.o.', 'sp. z o. o.', 'sp.zo.o.',
+    'Sp z oo'), a zwykle porownanie substringowe z samym _norm gubi sie na
+    pojedynczej dodatkowej spacji. Zweryfikowane na zywo na realnym
+    inwestorze 'M4 Sp. z o. o.' (dodatkowa spacja przed drugim 'o.') —
+    bez tej funkcji byl BLEDNIE klasyfikowany jako osoba fizyczna, nie spolka."""
+    return re.sub(r"[.\s]", "", _norm(text))
+
+
 def looks_like_company(investor_name: str, company_signals: list[str]) -> bool:
-    v = _norm(investor_name)
+    v = _norm_tight(investor_name)
     if not v:
         return False
-    return any(_norm(sig) in v for sig in company_signals)
+    return any(_norm_tight(sig) in v for sig in company_signals)
 
 
 def is_known_large_developer(investor_name: str, known_large: list[str]) -> bool:

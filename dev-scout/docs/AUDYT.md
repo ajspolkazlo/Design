@@ -295,3 +295,168 @@ wykresy mają teraz `visible_cells_only = False`.
 **Nowa lista priorytetów, gdyby był czas tylko na jedną rzecz:** cron dzienny —
 to jedyny pozostały punkt z pierwotnej listy, i jedyny, którego nie da się
 zrobić bez dostępu do trwałej infrastruktury Adama.
+
+---
+
+## 11. Zadania 0-4 (lipiec 2026) — twardy filtr domów prywatnych, martwe
+## linki, nowe sygnały matchowania, KRS/PRS, wyszukiwanie strony dewelopera
+
+Duża runda zmian po kolejnej rundzie zrzutów ekranu od Adama z konkretnymi,
+błędnymi wierszami (WNIOSEK/10447/2026, WNIOSEK/9227/2026, WNIOSEK/5992/2026).
+Zasada nadrzędna przez całą rundę: **w razie niejednoznaczności — zawsze
+"wymaga ręcznej weryfikacji", nigdy "pewne dopasowanie"** (fałszywy negatyw
+wolimy od fałszywego pozytywu).
+
+### Zadanie 0 — twardy filtr domów jednorodzinnych osób prywatnych
+
+- ✅ `filters.is_private_single_family_home()`: `liczba_budynkow == 1` I
+  fuzzy-dopasowanie słowa "wolnostojący" w kategorii obiektu (własny
+  Levenshtein, tolerancja literówek — złapie też "WOLNOSTOJACY" bez ogonków
+  i realny błąd źródła "SZAMABO" zamiast "SZAMBO").
+  Nie odrzuca "zespół budynków"/szeregowy/bliźniak (liczba_budynkow > 1).
+- ✅ Odrzucone leady zapisywane do bazy ze `status='rejected'` +
+  `rejection_reason` (audyt, nigdy nie eksportowane — `step_export` ma teraz
+  `WHERE status != 'rejected'`, wcześniej **w ogóle nie miał WHERE**, czyli
+  nawet nieocenione leady trafiały do CSV — realny, niezależny bug znaleziony
+  przy okazji).
+- ✅ Zweryfikowane na żywo na 884 realnych leadach: 253 odrzucone.
+- ✅ Testy: dokładnie 4 przykłady Adama (muszą odrzucić) + przykłady
+  wielobudynkowe (muszą przejść) — `tests/test_filters.py`.
+
+### Zadanie 1 — martwe/archiwalne ogłoszenia bez przekierowania
+
+Zdiagnozowane na żywo dla wszystkich 3 zgłoszonych przypadków:
+
+- **Otodom (WNIOSEK/10447 i /9227): HTTP 410, ale strona wciąż serwuje pełny
+  `__NEXT_DATA__.ad` JSON** jakby ogłoszenie żyło — poprzedni kod w ogóle nie
+  sprawdzał kodu HTTP. Naprawione: `status_code >= 400` → martwe, PLUS
+  niezależny sygnał `ad.status != "active"`.
+- **Morizon (WNIOSEK/5992): HTTP 404 bez przekierowania.** Naprawione tym
+  samym sprawdzeniem kodu HTTP (pierwsza rzecz w `fetch_html_facts`).
+- Skatalogowane sygnały "martwe" per portal (wszystkie zweryfikowane na
+  żywo 23.07.2026): Gratka/Morizon = HTTP 404 bez przekierowania; RynekPierwotny
+  = HTTP 404 bez przekierowania; Domiporta = HTTP 200 PO przekierowaniu na
+  kategorię (już wcześniej obsłużone); Otodom = HTTP 410 + `ad.status`.
+- ✅ **Zasada 1.3**: dopasowania `dead`/`is_rental` odrzucane NAJPIERW w
+  `judge_match`, przed jakąkolwiek analizą geometrii/metrażu.
+- ✅ **Zasada 1.4** — świeży, niezależny re-check TUŻ PRZED generowaniem
+  raportu (`report_xlsx.effective_matches`/`_final_liveness_check`), nie tylko
+  przy pierwszym enrichu. Złapał na żywo **4. przypadek** samodzielnie:
+  WNIOSEK/17832/2026 (Otodom), CONFIRMED kilka godzin wcześniej, wygasł zanim
+  wygenerowano raport — przepisany na REJECTED z jawnym powodem, lead spadł do
+  następnego najlepszego dopasowania (OLX, LIKELY). Realny dowód wartości tego
+  kroku, nie tylko teoretyczny.
+- ✅ Testy regresyjne z zamockowanym HTML/JSON dla każdego wzorca —
+  `tests/test_verify.py`.
+
+### Zadanie 1B — dodatkowe sygnały matchowania
+
+- ✅ **Data ogłoszenia vs data wniosku wzmocniona**: ogłoszenie istotnie
+  starsze od wniosku RWDZ teraz jest **twardym pułapem** — dopasowanie nigdy
+  nie osiągnie CONFIRMED (`date_caps_confirmed`), nawet z idealną geometrią.
+  Celowo NIE hard-reject: legalne wieloetapowe inwestycje mogą mieć wcześniejsze
+  ogłoszenia innych budynków na tej samej dużej działce.
+- ❌ **Numer działki/KW wprost w treści ogłoszenia** — sprawdzone na żywo na
+  4 realnych ogłoszeniach (3 różne portale): nigdzie nie występuje wprost.
+  Odrzucone jako niewykonalne przy obecnym stanie treści ogłoszeń na tych
+  portalach.
+- ❌ **Porównanie snapshotów tego samego URL-a między cyklami recheck** —
+  odrzucone świadomie: architektura już odtwarza fakty od nowa przy każdym
+  sprawdzeniu (Zadanie 1.4), więc obawa "URL recyklingowany przez portal dla
+  innej oferty" jest w dużej mierze już zaadresowana przez samą świeżość
+  danych, a dodatkowa warstwa snapshotów dodałaby złożoność bez wyraźnej
+  dodatkowej wartości.
+- ❌ **Szukanie po nazwie inwestycji/osiedla** — RWDZ nie ma takiego pola
+  (tylko `nazwa_zamierzenia_bud`, opis typu budynku, NIE nazwa marketingowa).
+  Niewykonalne bez zewnętrznego źródła nazw inwestycji.
+
+### Zadanie 2 — alternatywne źródło danych firmowych (KRS/PRS)
+
+- ❌ **PRS (prs.ms.gov.pl/ci)** sprawdzone na żywo: to Angular SPA, którego
+  kafelek "Wyszukiwarka KRS" linkuje wprost do TEGO SAMEGO chronionego
+  Incapsulą `wyszukiwarka-krs.ms.gov.pl` (nadal HTTP 403 na żywo) — NIE jest
+  niezależnym obejściem. Zgadywane endpointy `/api/prs/...` = 404. Zostaje
+  wyłączone, zgodnie z wcześniejszą decyzją.
+- ✅ Potwierdzone na żywo: pole inwestora w RWDZ **nigdy** nie zawiera numeru
+  KRS (0/320 070 sprawdzonych wartości).
+- ✅ `company_lookup.lookup_krs_by_number()` — nowa funkcja, działa na żywo
+  przeciw `api-krs.ms.gov.pl/api/krs/OdpisAktualny/{numer}` (potwierdzone np.
+  na numerze 0000250912 — pełne dane TOP INVESTMENT). Gotowa do użycia, gdy
+  tylko pojawi się skądś numer KRS (obecnie: nigdzie w pipeline, bo RWDZ go
+  nie ma — patrz wyżej).
+- ✅ CEIDG bez tokenu: już wcześniej działało poprawnie (pomija wzbogacenie
+  bez błędu), potwierdzone testem.
+
+### Zadanie 3 — wyszukiwanie strony dewelopera (`src/developer_search.py`)
+
+- ✅ Nowy moduł: pomija osoby fizyczne całkowicie (te same sygnały co
+  `filters.looks_like_company`, odwrócone), do 3 wariantów zapytania do Brave
+  Search (przerywa na pierwszym wystarczająco dobrym wyniku), blokuje domeny
+  6 portali + krótką listę agregatorów/mediów, Facebook/LinkedIn/Instagram to
+  ZAWSZE tylko `kandydat_niepewny`.
+- ⚠️ **Poważny fałszywy pozytyw złapany na PIERWSZYM żywym teście**:
+  `"TOP INVESTMENT Sp. z o.o."` trafiło (najwyższą pewnością!) w
+  `companiesmarketcap.com/.../largest-investment-companies-by-market-cap/` —
+  kompletnie niezwiązaną stronę o rynkach finansowych, bo fraza "top
+  investment" naturalnie występuje w angielskim tekście o inwestycjach.
+  Nawet wymóg sąsiedztwa słów (nie tylko niezależnej obecności) tego NIE
+  złapał. **Naprawione przeprojektowaniem zasady pewności**: JEDYNYM
+  sygnałem wystarczającym do `potwierdzona`/`prawdopodobna` jest teraz dowód
+  DOMENOWY (wszystkie długie tokeny marki w nazwie domeny kandydata — i dla
+  nazw jednowyrazowych dodatkowy próg długości ≥4 znaki, żeby krótkie,
+  generyczne słowo samo nie wystarczyło). Samo wystąpienie nazwy w
+  tytule/opisie wyniku wyszukiwania ląduje WYŁĄCZNIE jako `kandydat_niepewny`
+  — nigdy wyżej, niezależnie od walidacji treści strony. Walidacja NIP w
+  treści strony pozostaje jedynym sposobem podniesienia dowodu domenowego do
+  `potwierdzona` (10-cyfrowy numer to wystarczająco swoisty sygnał, w
+  odróżnieniu od samej nazwy).
+- ✅ Ten sam typ bugu ("M4 Sp. z o. o." z dodatkową spacją nie dopasowywał się
+  do sygnału "sp. z o.o." przez zwykły substring) znaleziony i naprawiony
+  identycznie w TRZECH miejscach: `filters.looks_like_company`,
+  `company_lookup._looks_like_krs_company`, `developer_search.is_individual`
+  — realny, wcześniej istniejący bug wpływający na klasyfikację
+  osoba/spółka w produkcyjnej logice, nie tylko na nowy kod Zadania 3.
+  Naprawa: `_norm_tight()` (dodatkowo usuwa kropki/spacje przed porównaniem).
+- ✅ Cache trwały SQLite (`data/developer_search_cache.sqlite3`) — wynik
+  pozytywny bez wygasania, "nie znaleziono" z TTL 30 dni.
+- ✅ Wpięte do `main.py::step_enrich` (NIP z `company_lookup`, jeśli akurat
+  znany, wzmacnia walidację) i do nowych kolumn DB (`dev_site_url`,
+  `dev_site_status`, `dev_site_matched_on` — migracja w `db.py`).
+  CSV eksportuje te kolumny automatycznie (bez zmiany nazw, tak jak reszta
+  CSV — surowe nazwy kolumn DB).
+- ✅ Nowe kolumny w Excelu: "Strona dewelopera" (klikalny link TYLKO dla
+  `potwierdzona`/`prawdopodobna`; dla `kandydat_niepewny` URL pokazany jako
+  zwykły, NIEklikalny tekst do ręcznej weryfikacji, żeby nie sugerować
+  pewności, której nie ma) + "Status strony" (kolorowanie: zielony =
+  potwierdzona, niebieski/żółty = prawdopodobna/kandydat_niepewny, szary =
+  brak/nie znaleziono).
+- ✅ Testy: `tests/test_developer_search.py` (21 testów — filtrowanie domen,
+  ranking kandydatów, regresja na dokładnym przypadku TOP INVESTMENT,
+  walidacja NIP, pominięcie osób fizycznych, cache hit/miss + TTL) +
+  `tests/test_report_xlsx.py::test_build_writes_dev_site_columns`
+  (end-to-end na zbudowanym pliku xlsx: hiperłącze obecne/nieobecne zgodnie
+  ze statusem).
+- ⚠️ **Nieprzetestowane na żywo w tej sesji** (brak dostępnego klucza
+  `BRAVE_SEARCH_API_KEY` w środowisku tej konkretnej sesji — był dostępny
+  wcześniej w tej samej rundzie prac, ale nie przetrwał do tego momentu):
+  poprawka na `TOP INVESTMENT`/`M4 Sp. z o. o.` zweryfikowana WYŁĄCZNIE
+  testami jednostkowymi z zamockowanym `_search_brave`/`requests.get`,
+  dokładnie odtwarzającymi złapany na żywo przypadek (patrz
+  `test_rank_candidate_regression_top_investment_false_positive` i
+  `test_find_developer_site_regression_top_investment_caps_at_uncertain`).
+  Zalecane: ponowny przebieg na żywo z realnym kluczem Brave przy najbliższej
+  okazji, żeby potwierdzić że nowa logika faktycznie znajduje PRAWDZIWĄ
+  stronę topinvestment.pl (o ile istnieje) zamiast tylko poprawnie odrzucać
+  fałszywy trop.
+
+### Podsumowanie ograniczeń, które pozostają po tej rundzie
+
+- Budżet Brave Search dla pełnych 884 leadów wciąż nierozstrzygnięty z
+  Adamem (punkt 7) — Zadanie 3 dokłada kolejne zapytania do tego samego
+  budżetu (do 3 na inwestora, z cache ograniczającym powtórki).
+- Cron dzienny — nadal jedyny punkt z pierwotnej listy CLAUDE.md niezrobiony
+  (wymaga trwałej infrastruktury Adama, nie da się z tej sesji).
+- Walidacja Zadania 3 nie ma dostępu do numeru KRS w praktyce (RWDZ go nie
+  ma — patrz Zadanie 2), więc w tej chwili realnie korzysta tylko z NIP z
+  CEIDG (gdy token ustawiony) — status `potwierdzona` będzie w praktyce
+  rzadszy niż mógłby być, gdyby KRS był łatwiej dostępny.

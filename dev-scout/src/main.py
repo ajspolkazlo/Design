@@ -27,8 +27,9 @@ from pathlib import Path
 import pandas as pd
 import yaml
 
-from src import cadastral, company_lookup, db, geo_cache, geocode, portal_check, rwdz_fetch, rwdz_parse, scoring, verify
-from src.filters import apply_filters
+from src import (cadastral, company_lookup, db, developer_search, geo_cache, geocode, portal_check,
+                  rwdz_fetch, rwdz_parse, scoring, verify)
+from src.filters import apply_filters, is_private_single_family_home
 
 log = logging.getLogger("dev_scout")
 ROOT = Path(__file__).parent.parent
@@ -76,8 +77,10 @@ def step_parse_and_filter(cfg: dict, csv_path: Path) -> pd.DataFrame:
 def step_store(cfg: dict, filtered_df: pd.DataFrame) -> int:
     conn = db.connect(ROOT / cfg["paths"]["db_path"])
     rows = []
+    rejected_private = 0
     for _, r in filtered_df.iterrows():
-        rows.append({
+        liczba_budynkow = r.get("norm_liczba_budynkow")
+        row = {
             "id_sprawy": r.get("norm_id_sprawy") or f"row-{r.name}",
             "data": r.get("norm_data"),
             "gmina": r.get("norm_gmina"),
@@ -86,12 +89,24 @@ def step_store(cfg: dict, filtered_df: pd.DataFrame) -> int:
             "numer_domu": r.get("norm_numer_domu"),
             "kategoria_obiektu": r.get("norm_kategoria_obiektu"),
             "inwestor": r.get("norm_inwestor"),
-            "liczba_budynkow": r.get("norm_liczba_budynkow"),
+            "liczba_budynkow": liczba_budynkow,
             "is_likely_company": r.get("is_likely_company"),
             "raw": r.to_dict(),
-        })
+        }
+        # Twardy filtr (na zyczenie Adama): pojedynczy budynek jednorodzinny
+        # WOLNOSTOJACY = niemal zawsze osoba prywatna, zero wartosci jako lead.
+        # Zapisujemy do bazy jako status='rejected' (do wgladu/audytu
+        # skutecznosci filtra), ale step_export i tools/report_xlsx.py NIGDY
+        # nie czytaja tego statusu — patrz db.upsert_leads docstring.
+        if is_private_single_family_home(row["kategoria_obiektu"], liczba_budynkow):
+            row["status"] = "rejected"
+            row["rejection_reason"] = "dom_jednorodzinny_osoba_prywatna"
+            rejected_private += 1
+        rows.append(row)
     new_count = db.upsert_leads(conn, rows)
     conn.close()
+    if rejected_private:
+        log.info("Odrzucono twardo %d wnioskow jako 'dom jednorodzinny osoby prywatnej'", rejected_private)
     log.info("Zapisano %d nowych leadow do bazy", new_count)
     return new_count
 
@@ -107,6 +122,18 @@ def step_enrich(cfg: dict) -> None:
         except Exception:
             log.exception("Nie udalo sie wzbogacic %s przez KRS/CEIDG", lead["id_sprawy"])
             info_json = json.dumps({"found": False, "error": "lookup_failed"})
+            info = None
+
+        # Strona dewelopera (Zadanie 3, patrz src/developer_search.py) — NIP
+        # (jesli akurat znany z KRS/CEIDG powyzej) wzmacnia walidacje do
+        # statusu "potwierdzona"; bez niego kandydaty z dowodem domenowym
+        # ladowane sa jako "prawdopodobna" najwyzej.
+        try:
+            dev_site = developer_search.find_developer_site(
+                lead["inwestor"] or "", nip=(info.nip if info else None))
+        except Exception:
+            log.exception("Nie udalo sie wyszukac strony dewelopera dla %s", lead["id_sprawy"])
+            dev_site = developer_search.DeveloperSite(investor=lead["inwestor"] or "")
 
         # Geokodowanie: ULDK (numer dzialki) PRZED Nominatim (adres). ULDK
         # zwraca dokladna geometrie dzialki katastralnej — dokladniejsze niz
@@ -278,6 +305,9 @@ def step_enrich(cfg: dict) -> None:
             on_portal_checked_at=on_portal_checked_at,
             verify_json=json.dumps(verify_payload, ensure_ascii=False),
             distance_km=distance_km,
+            dev_site_url=dev_site.url,
+            dev_site_status=dev_site.status,
+            dev_site_matched_on=dev_site.matched_on,
         )
     portal_check.close_browser()  # zamknij Chromium jesli backend browser byl uzyty
     conn.close()
@@ -356,7 +386,10 @@ def step_score(cfg: dict) -> None:
 def step_export(cfg: dict) -> None:
     conn = db.connect(ROOT / cfg["paths"]["db_path"])
     conn.row_factory = None
-    df = pd.read_sql_query("SELECT * FROM leads ORDER BY score DESC NULLS LAST", conn)
+    # status != 'rejected': leady odrzucone twardym filtrem (patrz step_store,
+    # filters.is_private_single_family_home) zostaja w bazie do wgladu/audytu,
+    # ale NIGDY nie maja trafic do eksportu w zadnej formie.
+    df = pd.read_sql_query("SELECT * FROM leads WHERE status != 'rejected' ORDER BY score DESC NULLS LAST", conn)
     conn.close()
 
     out_dir = ROOT / cfg["paths"]["output_dir"]

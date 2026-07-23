@@ -313,6 +313,15 @@ def fetch_otodom_facts(url: str, timeout: int = 20) -> ListingFacts | None:
         resp = requests.get(url, headers={"User-Agent": _UA, "Accept-Language": "pl-PL"}, timeout=timeout)
     except requests.RequestException:
         return None
+    # HTTP status PRZED czymkolwiek innym — zweryfikowane na zywo (23.07.2026,
+    # lead ST-MZ-PR/WNIOSEK/10447/2026): Otodom zwraca HTTP 410 Gone, ale
+    # WCIAZ SERWUJE PELNY __NEXT_DATA__.ad (tytul, daty, wspolrzedne) tak jakby
+    # oferta byla zywa — bez sprawdzenia kodu statusu ta funkcja parsowala
+    # taka strone jako w pelni poprawne, aktualne ogloszenie. To byl realny,
+    # zgloszony przez Adama falszywy pozytyw, nie hipoteza.
+    if resp.status_code >= 400:
+        log.info("Otodom %s zwrocil HTTP %d — ogloszenie usuniete/wygasle, pomijam", url, resp.status_code)
+        return _dead_link()
     from src import portal_check  # import tutaj — unika cyklu importu na poziomie modulu
     if not portal_check._is_individual_listing("otodom", resp.url):
         log.info("Ogloszenie %s przekierowalo poza konkretna oferte (%s) — prawdopodobnie wygaslo, pomijam", url, resp.url)
@@ -325,6 +334,15 @@ def fetch_otodom_facts(url: str, timeout: int = 20) -> ListingFacts | None:
         ad = json.loads(m.group(1))["props"]["pageProps"]["ad"]
     except (json.JSONDecodeError, KeyError, TypeError):
         return None
+    # Otodom.ad.status: "active" gdy zywe; "removed"/inne gdy nie — DODATKOWY,
+    # niezalezny od HTTP-statusu sygnal (zweryfikowane na zywo: sam status
+    # HTTP juz wystarcza w praktyce, ale pole status w JSON jest jeszcze
+    # bardziej autorytatywne, gdyby kiedys Otodom zaczal zwracac 200 dla
+    # usunietych ofert zamiast 410).
+    ad_status = (ad.get("status") or "").lower()
+    if ad_status and ad_status != "active":
+        log.info("Otodom %s ma ad.status=%r — ogloszenie nieaktywne, pomijam", url, ad_status)
+        return _dead_link()
     t = ad.get("target", {}) or {}
     loc = (ad.get("location", {}) or {}).get("coordinates", {}) or {}
 
@@ -518,16 +536,27 @@ def fetch_html_facts(portal: str, url: str, timeout: int = 20) -> ListingFacts |
     meta-opis SEO (dziala dla Gratka/Morizon — ten sam string na obu, patrz
     _META_AREA_PLOT_RE), (3) regexy na calym HTML jako ostatnia deska ratunku.
 
-    WAZNE, zweryfikowane na zywo (22.07.2026): dwa z trzech testowych URL-i z
-    wczesniejszej sesji (Gratka, Morizon) okazaly sie NIEAKTUALNE i po prostu
-    PRZEKIEROWALY na strone kategorii (oferta wygasla/usunieta) — bez
-    sprawdzenia response.url wzgledem wzorca "to jest konkretne ogloszenie"
-    wyciagnelibysmy dane INNEJ, przypadkowej oferty z tej kategorii i
-    podpisali je pod naszym leadem. To gorsze niz brak danych."""
+    WAZNE, zweryfikowane na zywo: kazdy z 6 portali sygnalizuje "ogloszenie
+    nieaktualne" INACZEJ — sprawdzone na zywo (23.07.2026) na kazdym z osobna:
+      - Gratka: HTTP 404, bez przekierowania, tytul "Pod tym adresem nic nie
+        ma...".
+      - Morizon: HTTP 404, bez przekierowania, tytul "Pod tym adresem nic nie
+        ma..." (te same 2 przypadki byly realnymi, zgloszonymi przez Adama
+        falszywymi pozytywami — lead 9227 i 5992).
+      - RynekPierwotny: HTTP 404, bez przekierowania, tytul "404 - Nie
+        znaleziono strony".
+      - Domiporta: PRZEKIEROWANIE (HTTP 200 po przekierowaniu) na strone
+        kategorii/wynikow — juz obslugiwane przez sprawdzenie URL-a nizej.
+    Zaden z tych HTTP-404 przypadkow NIE przekierowuje — sam _is_individual_listing
+    (sprawdzenie URL-a) ich NIE lapal, bo URL sie nie zmienia. Dlatego kod
+    statusu HTTP jest sprawdzany JAKO PIERWSZY, niezaleznie od reszty."""
     try:
         resp = requests.get(url, headers={"User-Agent": _UA, "Accept-Language": "pl-PL"}, timeout=timeout)
     except requests.RequestException:
         return None
+    if resp.status_code >= 400:
+        log.info("%s %s zwrocil HTTP %d — ogloszenie usuniete/wygasle, pomijam", portal, url, resp.status_code)
+        return _dead_link()
     from src import portal_check  # import tutaj, nie na gorze modulu — unika cyklu importu
     if not portal_check._is_individual_listing(portal, resp.url):
         log.info("Ogloszenie %s przekierowalo poza konkretna oferte (%s) — prawdopodobnie wygaslo, pomijam", url, resp.url)
@@ -681,14 +710,24 @@ def judge_match(
         reasons.append("rynek pierwotny")
 
     # --- czas: ogloszenie vs wniosek ---
+    # Na zyczenie: ogloszenie wystawione PRZED data wniosku o pozwolenie jest
+    # silna poszlaka "to inna nieruchomosc" (logicznie nie da sie reklamowac
+    # NOWEJ inwestycji, na ktora nie ma jeszcze pozwolenia) — ALE celowo NIE
+    # hard_reject, bo seryjni deweloperzy legalnie prowadza sprzedaz kilku faz
+    # tej samej, duzej inwestycji rownolegle (kolejne wnioski na kolejne
+    # budynki/etapy tego samego zamierzenia), a geometria (ta sama dzialka/
+    # blisko) moze wtedy nadal trafnie wskazywac na TA SAMA inwestycje, tylko
+    # inna faze. Kompromis: taki lead NIE MOZE osiagnac CONFIRMED (najwyzej
+    # LIKELY) — zbyt duza szansa pomylki jak na najwyzszy poziom pewnosci,
+    # nawet gdy geometria idealnie pasuje.
+    date_caps_confirmed = False
     created = _parse_dt(facts.created_at)
     wniosek = _parse_dt(lead.get("data_wniosku"))
     if created and wniosek:
         if created < wniosek - timedelta(days=cfg["listing_age_tolerance_days"]):
             months = int((wniosek - created).days / 30)
-            reasons.append(f"ogłoszenie starsze od wniosku o ~{months} mies. — możliwa wcześniejsza faza/inna nieruchomość")
-            # celowo NIE hard_reject: seryjni deweloperzy prowadza sprzedaz
-            # faz rownolegle; to demota do REVIEW, chyba ze geometria potwierdza
+            reasons.append(f"ogłoszenie starsze od wniosku o ~{months} mies. — możliwa wcześniejsza faza/inna nieruchomość (nie może osiągnąć poziomu \"potwierdzone\")")
+            date_caps_confirmed = True
         else:
             pluses += 1
             reasons.append("ogłoszenie nie starsze niż wniosek (spójny czas)")
@@ -724,7 +763,7 @@ def judge_match(
     # --- agregacja ---
     if hard_reject:
         verdict = "REJECTED"
-    elif geo_confirmed and pluses >= 1:
+    elif geo_confirmed and pluses >= 1 and not date_caps_confirmed:
         verdict = "CONFIRMED"
     elif geo_confirmed or pluses >= 2:
         verdict = "LIKELY"

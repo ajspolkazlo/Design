@@ -59,6 +59,22 @@ def test_judge_match_geo_confirmed():
     assert any("działki" in r or "m" in r for r in verdict.reasons)
 
 
+def test_judge_match_listing_predating_wniosek_cannot_reach_confirmed():
+    # Zadanie 1B: ogloszenie wystawione ZNACZNIE PRZED data wniosku o
+    # pozwolenie to silna poszlaka "inna nieruchomosc" — nawet gdy geometria
+    # idealnie pasuje (ta sama dzialka), werdykt NIE MOZE byc CONFIRMED,
+    # najwyzej LIKELY (moze to legalnie byc wczesniejsza faza tej samej
+    # duzej inwestycji, wiec nie hard-rejectujemy).
+    facts = verify.ListingFacts(
+        source="otodom_json", market="primary", area_m2=130, coords_precise=True,
+        lat=52.11820, lon=20.65103, created_at="2020-01-01T00:00:00Z",
+    )
+    lead = {"kubatura": 569, "data_wniosku": "2026-06-01", "lat": 52.11874, "lon": 20.64969}
+    verdict = verify.judge_match("otodom", "http://example.com/x", facts, lead, {}, CFG)
+    assert verdict.verdict != "CONFIRMED"
+    assert any("nie może osiągnąć" in r for r in verdict.reasons)
+
+
 def test_judge_match_secondary_market_hard_rejects():
     facts = verify.ListingFacts(source="otodom_json", market="secondary", coords_precise=True,
                                  lat=52.1, lon=20.1)
@@ -209,3 +225,95 @@ def test_facts_from_rynekpierwotny_matches_by_path():
     assert facts is not None
     assert facts.market == "primary"
     assert facts.lat == 52.22
+
+
+# ------------------- Zadanie 1: ogloszenia archiwalne/wygasle -------------------
+# Kazdy z tych wzorcow zweryfikowany na zywo (23.07.2026) na realnych
+# ogloszeniach wskazanych przez Adama jako blednie pokazane linki:
+# ST-MZ-PR/WNIOSEK/10447/2026 (Otodom, HTTP 410 + ad.status="removed"),
+# ST-MZ-WM/WNIOSEK/9227/2026 (to samo), ST-MZ-OT/WNIOSEK/5992/2026 (Morizon,
+# HTTP 404 bez przekierowania). Testy tu mockuja `requests.get`, zeby pilnowac
+# tych dokladnych wzorcow bez sieci.
+
+class _FakeResp:
+    def __init__(self, status_code=200, url="http://x", text=""):
+        self.status_code = status_code
+        self.url = url
+        self.text = text
+
+
+def test_fetch_otodom_facts_http_410_with_live_looking_json_is_dead(monkeypatch):
+    # Realny przypadek: HTTP 410, ale __NEXT_DATA__.ad wciaz w pelni obecny
+    # (tytul, daty, wspolrzedne) — bez sprawdzenia kodu statusu wygladaloby
+    # to jak w pelni poprawne ogloszenie
+    import json as json_module
+    next_data = {"props": {"pageProps": {"ad": {
+        "status": "removed", "title": "Stare ogloszenie", "market": "primary",
+        "target": {}, "location": {"coordinates": {}},
+    }}}}
+    body = f'<script id="__NEXT_DATA__" crossorigin="anonymous">{json_module.dumps(next_data)}</script>'
+    monkeypatch.setattr(verify.requests, "get",
+                         lambda *a, **k: _FakeResp(status_code=410, url=a[0], text=body))
+    facts = verify.fetch_otodom_facts("https://www.otodom.pl/pl/oferta/stare-id")
+    assert facts is not None and facts.dead
+
+
+def test_fetch_otodom_facts_ad_status_removed_even_with_200(monkeypatch):
+    # Zabezpieczenie niezalezne od HTTP-statusu — gdyby Otodom kiedys zaczal
+    # zwracac 200 dla usunietych ofert
+    import json as json_module
+    next_data = {"props": {"pageProps": {"ad": {
+        "status": "removed", "market": "primary", "target": {}, "location": {"coordinates": {}},
+    }}}}
+    body = f'<script id="__NEXT_DATA__">{json_module.dumps(next_data)}</script>'
+    monkeypatch.setattr(verify.requests, "get",
+                         lambda *a, **k: _FakeResp(status_code=200, url=a[0], text=body))
+    facts = verify.fetch_otodom_facts("https://www.otodom.pl/pl/oferta/usuniete-ale-200")
+    assert facts is not None and facts.dead
+
+
+def test_fetch_otodom_facts_live_ad_status_active_not_dead(monkeypatch):
+    import json as json_module
+    next_data = {"props": {"pageProps": {"ad": {
+        "status": "active", "market": "primary", "target": {"Area": "100"},
+        "location": {"coordinates": {"latitude": 52.1, "longitude": 21.0}},
+        "advertiserType": "business",
+    }}}}
+    body = f'<script id="__NEXT_DATA__">{json_module.dumps(next_data)}</script>'
+    monkeypatch.setattr(verify.requests, "get",
+                         lambda *a, **k: _FakeResp(status_code=200, url=a[0], text=body))
+    facts = verify.fetch_otodom_facts("https://www.otodom.pl/pl/oferta/zywe-id")
+    assert facts is not None and not facts.dead
+    assert facts.area_m2 == 100.0
+
+
+def test_fetch_html_facts_http_404_no_redirect_is_dead_gratka(monkeypatch):
+    # Zweryfikowane na zywo: Gratka i Morizon zwracaja HTTP 404 BEZ
+    # przekierowania dla usunietych ofert (tytul "Pod tym adresem nic nie ma...")
+    monkeypatch.setattr(verify.requests, "get",
+                         lambda *a, **k: _FakeResp(status_code=404, url=a[0], text="<title>Pod tym adresem nic nie ma...</title>"))
+    facts = verify.fetch_html_facts("gratka", "https://gratka.pl/nieruchomosci/x/ob/1")
+    assert facts is not None and facts.dead
+
+
+def test_fetch_html_facts_http_404_no_redirect_is_dead_morizon(monkeypatch):
+    monkeypatch.setattr(verify.requests, "get",
+                         lambda *a, **k: _FakeResp(status_code=404, url=a[0], text="<title>Pod tym adresem nic nie ma...</title>"))
+    facts = verify.fetch_html_facts("morizon", "https://www.morizon.pl/oferta/x")
+    assert facts is not None and facts.dead
+
+
+def test_fetch_html_facts_http_404_rynekpierwotny(monkeypatch):
+    monkeypatch.setattr(verify.requests, "get",
+                         lambda *a, **k: _FakeResp(status_code=404, url=a[0], text="<title>404 - Nie znaleziono strony</title>"))
+    facts = verify.fetch_html_facts("rynekpierwotny", "https://rynekpierwotny.pl/oferty/x/")
+    assert facts is not None and facts.dead
+
+
+def test_fetch_html_facts_live_200_not_dead(monkeypatch):
+    body = '<meta property="og:description" content="dom - 200 m² (pow. działki 500 m²) za 900 000 zł">'
+    monkeypatch.setattr(verify.requests, "get",
+                         lambda *a, **k: _FakeResp(status_code=200, url=a[0], text=body))
+    facts = verify.fetch_html_facts("gratka", "https://gratka.pl/nieruchomosci/x/ob/1")
+    assert facts is not None and not facts.dead
+    assert facts.area_m2 == 200.0

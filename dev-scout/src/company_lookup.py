@@ -6,7 +6,8 @@ Stan po zweryfikowaniu na zywym internecie (2026, patrz CLAUDE.md zadanie 2):
 
   1. KRS (spolki: sp. z o.o., S.A., sp.k. itd.) — oficjalne API
      https://api-krs.ms.gov.pl/api/krs/OdpisAktualny/{numer_krs} DZIALA, ale
-     tylko po numerze KRS (zweryfikowane live). NIE ma oficjalnego wyszukiwania
+     tylko po numerze KRS (zweryfikowane live: KRS 0000250912 -> zwraca pelny
+     odpis "TOP INVESTMENT" SPOLKA Z O.O.). NIE ma oficjalnego wyszukiwania
      po nazwie. Wyszukiwarka https://wyszukiwarka-krs.ms.gov.pl/ jest za
      ochrona antybotowa (Incapsula, 403 na kazde zapytanie bez wzgledu na
      naglowki) — nie obchodzimy tego. rejestr.io ma to samo (Cloudflare
@@ -16,6 +17,25 @@ Stan po zweryfikowaniu na zywym internecie (2026, patrz CLAUDE.md zadanie 2):
      (Adam, lipiec 2026): NIE scrapowac, zaakceptowac brak wzbogacania KRS
      na razie. lookup_company() dla nazw wygladajacych na spolke zwraca
      wiec zawsze found=False, source=None.
+
+     Zbadane dodatkowo (23.07.2026, na zyczenie): Portal Rejestrow Sadowych
+     (https://prs.ms.gov.pl/ci) — to NIE jest niezalezna alternatywa. To
+     Angular SPA bez wlasnego, otwartego API do wyszukiwania po nazwie; jego
+     kafelek "Wyszukiwarka KRS" (zweryfikowane w /assets/env.js:
+     window.env.wyszukiwarkaKrsUrl) linkuje wprost do TEJ SAMEJ
+     wyszukiwarka-krs.ms.gov.pl za Incapsula (potwierdzone zywo: nadal HTTP
+     403 "Request unsuccessful. Incapsula incident..."). Sprobowane tez kilka
+     prawdopodobnych sciezek /api/prs/... — wszystkie 404. Wniosek: PRS nie
+     domyka tej luki, decyzja z lipca 2026 (nie scrapowac) pozostaje aktualna.
+
+     Sprawdzone tez: pole nazwa_inwestor w realnym zrzucie RWDZ (320 070
+     niepustych wartosci) NIGDY nie zawiera numeru KRS wprost (0 dopasowan do
+     wzorca numeru KRS ani slowa "KRS") — RWDZ to rejestr budowlany, nie
+     gospodarczy, wiec nie ma z czego zbudowac automatycznego mostka
+     nazwa->numer. `lookup_krs_by_number()` ponizej jest gotowa, przetestowana
+     na zywo funkcja na wypadek, gdyby numer KRS stal sie kiedys dostepny
+     jakimkolwiek innym sposobem (np. reczny wpis) — dzis lookup_company() jej
+     nie wywoluje automatycznie, bo nie ma z czego wziac numeru.
 
   2. CEIDG (jednoosobowe dzialalnosci gospodarcze) — oficjalne, w pelni
      udokumentowane REST API v3:
@@ -67,6 +87,8 @@ CEIDG_TOKEN_ENV_VAR = "CEIDG_API_TOKEN"
 # dokumentacja CEIDG API v3: limit 50 zapytan/3min -> ~3.6s odstepu; 4s z zapasem
 CEIDG_MIN_SECONDS_BETWEEN_REQUESTS = 4.0
 
+KRS_ODPIS_URL = "https://api-krs.ms.gov.pl/api/krs/OdpisAktualny/{krs}"
+
 _last_ceidg_request_at = 0.0
 
 
@@ -95,12 +117,19 @@ def _norm(text: str) -> str:
     return "".join(c for c in normalized if not unicodedata.combining(c)).lower().strip()
 
 
+def _norm_tight(text: str) -> str:
+    """Jak _norm, plus usuniecie kropek/spacji — patrz identyczny komentarz
+    w filters._norm_tight (ten sam bug, ta sama poprawka, zduplikowane
+    celowo — nie warto sprzegac modulow dla jednej funkcji)."""
+    return re.sub(r"[.\s]", "", _norm(text))
+
+
 def _looks_like_krs_company(name: str) -> bool:
     """Sygnaly formy prawnej spolki (sp. z o.o., S.A. itd.) -> to KRS, nie
     CEIDG, i KRS po nazwie nie da sie dzis bezpiecznie sprawdzic (patrz
     docstring modulu) — nie ma sensu odpytywac CEIDG."""
-    v = _norm(name)
-    return any(_norm(sig) in v for sig in _load_company_signals())
+    v = _norm_tight(name)
+    return any(_norm_tight(sig) in v for sig in _load_company_signals())
 
 
 # Boilerplate spotykany w polu inwestor z RWDZ, np. "Grazyna Jurczak
@@ -217,6 +246,43 @@ def _lookup_ceidg(name: str, token: str) -> CompanyInfo:
     return CompanyInfo(
         name=name, found=True, source="ceidg", nip=nip, address=address or None,
         website=website, phone=phone, raw=match,
+    )
+
+
+def lookup_krs_by_number(krs_number: str, timeout: int = 15) -> CompanyInfo:
+    """Oficjalne, dzialajace API MS — pelny odpis aktualny po numerze KRS
+    (zweryfikowane na zywo: KRS 0000250912 -> "TOP INVESTMENT" SPOLKA Z O.O.,
+    NIP i adres w dzial1.danePodmiotu / dzial1.siedzibaIAdres). NIE ma
+    wyszukiwania po nazwie (patrz docstring modulu) — ta funkcja przydaje sie
+    tylko gdy numer KRS jest juz znany skads indziej (dzis: brak takiego
+    zrodla w automatycznym pipeline, patrz docstring modulu; funkcja gotowa
+    na przyszlosc / do recznego uzycia)."""
+    krs_number = re.sub(r"\D", "", krs_number or "").zfill(10)
+    try:
+        resp = requests.get(
+            KRS_ODPIS_URL.format(krs=krs_number),
+            params={"rejestr": "P", "format": "json"},
+            headers={"User-Agent": "dev-scout/0.1"},
+            timeout=timeout,
+        )
+    except requests.RequestException:
+        log.warning("KRS OdpisAktualny nie powiodl sie dla %r", krs_number, exc_info=True)
+        return CompanyInfo(name="", found=False, source=None)
+    if resp.status_code != 200:
+        return CompanyInfo(name="", found=False, source=None)
+    try:
+        dane = resp.json()["odpis"]["dane"]
+        podmiot = dane["dzial1"]["danePodmiotu"]
+        siedziba = dane["dzial1"].get("siedzibaIAdres", {}).get("adres", {})
+    except (KeyError, TypeError, ValueError):
+        return CompanyInfo(name="", found=False, source=None)
+    nazwa = podmiot.get("nazwa", "")
+    address = ", ".join(p for p in (siedziba.get("ulica"), siedziba.get("nrDomu"),
+                                     siedziba.get("miejscowosc"), siedziba.get("kodPocztowy")) if p)
+    return CompanyInfo(
+        name=nazwa, found=True, source="krs", krs_number=krs_number,
+        nip=podmiot.get("identyfikatory", {}).get("nip") if isinstance(podmiot.get("identyfikatory"), dict) else None,
+        address=address or None, raw={"dzial1": dane.get("dzial1")},
     )
 
 

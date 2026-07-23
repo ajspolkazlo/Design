@@ -129,3 +129,52 @@ def test_sample_fixture_end_to_end():
     assert len(raw_df) == 9, "fikstura powinna miec 9 wierszy wejsciowych"
     assert len(filtered_df) == 4, "dokladnie 4 z 9 powinny przejsc filtry"
     assert set(filtered_df["norm_miejscowosc"]) == {"Piaseczno", "Michalowice", "Lomianki", "Legionowo"}
+
+
+# ------------------- Zadanie 0: dom jednorodzinny os. prywatnej -------------------
+# Cztery dokladne przyklady zgloszone przez Adama (22.07.2026) jako smieci
+# zaslaniajace wynik — MUSZA byc odrzucone. Dwa z nich maja realne literowki
+# z danych zrodlowych RWDZ ("MIESZKANY" zamiast "MIESZKALNY", "SACZELNE"
+# zamiast "SZCZELNE"), celowo zostawione w tescie zeby pilnowac fuzzy matchingu.
+
+_PRIVATE_HOME_EXAMPLES = [
+    "budowa budynku mieszkalnego jednorodzinnego wolnostojącego wraz z urządzeniami budowlanymi",
+    "BUDYNEK MIESZKANY JEDNORODZINNY WOLNOSTOJACY ORAZ SZAMABO SACZELNE O POJ. 10 M3",
+    "budowa budynku mieszkalnego jednorodzinnego wolnostojącego oraz szamba szczelnego o poj. 10 m3",
+    "Budowa budynku mieszkalnego jednorodzinnego wolnostojącego z garażem",
+]
+
+_DEVELOPER_MULTI_BUILDING_EXAMPLES = [
+    "trzy budynki mieszkalne jednorodzinne w zabudowie szeregowej",
+    "budowa dwóch budynków mieszkalnych jednorodzinnych w zabudowie bliźniaczej",
+    "zespół budynków mieszkalnych jednorodzinnych",
+    "zespół 4 budynków wolnostojących",
+]
+
+
+def test_private_single_family_home_rejected():
+    for text in _PRIVATE_HOME_EXAMPLES:
+        lb = filters.extract_building_count(text)
+        assert lb == 1, f"oczekiwano liczba_budynkow=1 dla: {text!r} (dostano {lb})"
+        assert filters.is_private_single_family_home(text, lb), f"powinno byc odrzucone: {text!r}"
+
+
+def test_developer_multi_building_not_rejected():
+    for text in _DEVELOPER_MULTI_BUILDING_EXAMPLES:
+        lb = filters.extract_building_count(text)
+        assert not filters.is_private_single_family_home(text, lb), \
+            f"NIE powinno byc odrzucone (to profil dewelopera): {text!r} (liczba_budynkow={lb})"
+
+
+def test_is_private_single_family_home_requires_exact_count_one():
+    # liczba_budynkow nieznana (None) -> nie zgadujemy, nie odrzucamy
+    assert not filters.is_private_single_family_home("budynek wolnostojący", None)
+    # liczba_budynkow > 1 -> nie odrzucamy nawet z "wolnostojący" w tekscie
+    assert not filters.is_private_single_family_home("wolnostojący", 2)
+
+
+def test_has_wolnostojacy_fuzzy_typo():
+    # literowka W SAMYM rdzeniu slowa (nie tylko w sasiednich wyrazach) —
+    # dystans edycyjny <=2 od "wolnostoj"
+    assert filters._has_wolnostojacy("budynek wolnostjacy jednorodzinny")
+    assert not filters._has_wolnostojacy("budynek w zabudowie szeregowej")

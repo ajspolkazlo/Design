@@ -33,8 +33,12 @@ CREATE TABLE IF NOT EXISTS leads (
     on_portal_json TEXT,
     on_portal_checked_at TEXT,
     verify_json TEXT,
+    dev_site_url TEXT,               -- patrz src/developer_search.py (Zadanie 3)
+    dev_site_status TEXT,            -- potwierdzona/prawdopodobna/kandydat_niepewny/brak_do_wyszukania_osoba_fizyczna/nie_znaleziono
+    dev_site_matched_on TEXT,        -- powod dopasowania, do debugowania (np. "NIP w treści strony")
     score INTEGER,
-    status TEXT DEFAULT 'new',       -- new -> enriched -> scored -> exported
+    rejection_reason TEXT,           -- np. 'dom_jednorodzinny_osoba_prywatna' — patrz filters.is_private_single_family_home
+    status TEXT DEFAULT 'new',       -- new -> enriched -> scored -> exported; albo 'rejected' (nigdy nie eksportowane)
     first_seen TEXT DEFAULT (datetime('now')),
     last_updated TEXT DEFAULT (datetime('now'))
 );
@@ -62,6 +66,10 @@ _MIGRATIONS = [
     "ALTER TABLE leads ADD COLUMN verify_json TEXT",
     "ALTER TABLE leads ADD COLUMN numer_domu TEXT",
     "ALTER TABLE leads ADD COLUMN adres_pelny TEXT",
+    "ALTER TABLE leads ADD COLUMN rejection_reason TEXT",
+    "ALTER TABLE leads ADD COLUMN dev_site_url TEXT",
+    "ALTER TABLE leads ADD COLUMN dev_site_status TEXT",
+    "ALTER TABLE leads ADD COLUMN dev_site_matched_on TEXT",
 ]
 
 
@@ -79,7 +87,15 @@ def connect(db_path: Path) -> sqlite3.Connection:
 
 def upsert_leads(conn: sqlite3.Connection, rows: list[dict]) -> int:
     """Wstawia nowe rekordy, ignoruje juz istniejace (po id_sprawy).
-    Zwraca liczbe faktycznie nowych rekordow."""
+    Zwraca liczbe faktycznie nowych rekordow.
+
+    row["status"]/row["rejection_reason"] sa opcjonalne — domyslnie status
+    'new' (jak dotychczas). Uzywane przez step_store do zapisania leadow
+    odrzuconych twardym filtrem (patrz filters.is_private_single_family_home)
+    jako status='rejected' + powod, zamiast pomijac je calkowicie — zeby dalo
+    sie zweryfikowac skutecznosc filtra na probce, bez ryzyka, ze taki lead
+    kiedykolwiek trafi do eksportu (step_export/tools/report_xlsx.py filtruja
+    po statusie i nigdy nie czytaja 'rejected')."""
     cur = conn.cursor()
     new_count = 0
     for row in rows:
@@ -88,8 +104,9 @@ def upsert_leads(conn: sqlite3.Connection, rows: list[dict]) -> int:
             continue
         cur.execute(
             """INSERT INTO leads (id_sprawy, data, gmina, miejscowosc, ulica, numer_domu,
-                                   kategoria_obiektu, inwestor, liczba_budynkow, is_likely_company, raw_json)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                                   kategoria_obiektu, inwestor, liczba_budynkow, is_likely_company, raw_json,
+                                   status, rejection_reason)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 row["id_sprawy"],
                 row.get("data"),
@@ -102,6 +119,8 @@ def upsert_leads(conn: sqlite3.Connection, rows: list[dict]) -> int:
                 row.get("liczba_budynkow"),
                 int(bool(row.get("is_likely_company"))),
                 json.dumps(row.get("raw", {}), ensure_ascii=False),
+                row.get("status", "new"),
+                row.get("rejection_reason"),
             ),
         )
         new_count += 1
