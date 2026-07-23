@@ -35,6 +35,10 @@ class _FakeResp:
 def _isolated_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(ds, "CACHE_DB_PATH", tmp_path / "developer_search_cache.sqlite3")
     monkeypatch.setenv(ds.BRAVE_API_KEY_ENV_VAR, "fake-key-for-tests")
+    # domyslnie BRAK klucza Places w testach — istniejace testy sciezki Brave
+    # maja wiec dzialac dokladnie tak jak przed dodaniem Zadania Places (krok
+    # Places jest po prostu pomijany bez klucza, patrz lookup_website_via_places)
+    monkeypatch.delenv(ds.GOOGLE_PLACES_API_KEY_ENV_VAR, raising=False)
 
 
 # --------------------------- is_individual / core_name ---------------------------
@@ -248,3 +252,135 @@ def test_cache_found_result_never_expires(monkeypatch):
         assert cached.status == ds.STATUS_LIKELY
     finally:
         conn.close()
+
+
+# --------------------------- Google Places: sygnal podstawowy ---------------------------
+
+def test_lookup_website_via_places_no_key_returns_none_without_network(monkeypatch):
+    called = []
+    monkeypatch.setattr(ds, "_search_places", lambda *a, **k: called.append(1))
+    site = ds.lookup_website_via_places("TOP INVESTMENT Sp. z o.o.", "Piaseczno")
+    assert site is None
+    assert not called  # bez klucza zero zapytan sieciowych
+
+
+def test_lookup_website_via_places_confirms_with_website(monkeypatch):
+    monkeypatch.setenv(ds.GOOGLE_PLACES_API_KEY_ENV_VAR, "fake-places-key")
+    fake_places = [{"id": "abc", "displayName": {"text": "Top Investment"},
+                     "websiteUri": "https://topinvestment.pl/", "formattedAddress": "Warszawa"}]
+    monkeypatch.setattr(ds, "_search_places", lambda query, api_key, timeout=15: fake_places)
+
+    site = ds.lookup_website_via_places("TOP INVESTMENT Sp. z o.o.", "Piaseczno")
+    assert site is not None
+    assert site.status == ds.STATUS_CONFIRMED
+    assert site.url == "https://topinvestment.pl/"
+    assert "Places" in site.matched_on
+
+
+def test_lookup_website_via_places_returns_none_when_no_website(monkeypatch):
+    """Brak websiteUri w wynikach (albo brak wynikow w ogole) -> None, zeby
+    find_developer_site spadl na fallback Brave, a NIE zaklasyfikowal od razu
+    jako 'nie_znaleziono' (to by uniemozliwilo probe przez Brave)."""
+    monkeypatch.setenv(ds.GOOGLE_PLACES_API_KEY_ENV_VAR, "fake-places-key")
+    fake_places = [{"id": "abc", "displayName": {"text": "Nieznana Firma"}, "formattedAddress": "Warszawa"}]
+    monkeypatch.setattr(ds, "_search_places", lambda query, api_key, timeout=15: fake_places)
+
+    assert ds.lookup_website_via_places("Nieznana Firma Sp. z o.o.", "Piaseczno") is None
+
+    monkeypatch.setattr(ds, "_search_places", lambda query, api_key, timeout=15: [])
+    assert ds.lookup_website_via_places("Inna Firma Sp. z o.o.", "Piaseczno") is None
+
+
+def test_lookup_website_via_places_filters_blocked_domains(monkeypatch):
+    # Places zwraca "website" ktory jest w rzeczywistosci portalem nieruchomosci
+    # (np. profil firmowy) — nie moze byc uznany za wlasna strone dewelopera
+    monkeypatch.setenv(ds.GOOGLE_PLACES_API_KEY_ENV_VAR, "fake-places-key")
+    fake_places = [{"websiteUri": "https://www.otodom.pl/deweloper/top-investment"}]
+    monkeypatch.setattr(ds, "_search_places", lambda query, api_key, timeout=15: fake_places)
+    assert ds.lookup_website_via_places("TOP INVESTMENT Sp. z o.o.", "Piaseczno") is None
+
+
+def test_lookup_website_via_places_network_error_falls_back_without_caching(monkeypatch):
+    import requests
+
+    monkeypatch.setenv(ds.GOOGLE_PLACES_API_KEY_ENV_VAR, "fake-places-key")
+
+    def _raise(*a, **k):
+        raise requests.RequestException("boom")
+
+    monkeypatch.setattr(ds, "_search_places", _raise)
+    assert ds.lookup_website_via_places("TOP INVESTMENT Sp. z o.o.", "Piaseczno") is None
+
+    # blad sieciowy nie zostal zapisany do cache -> kolejna proba znow odpytuje Places
+    calls = []
+    monkeypatch.setattr(ds, "_search_places", lambda query, api_key, timeout=15: (calls.append(1) or []))
+    ds.lookup_website_via_places("TOP INVESTMENT Sp. z o.o.", "Piaseczno")
+    assert len(calls) == 1
+
+
+def test_lookup_website_via_places_caches_result(monkeypatch):
+    monkeypatch.setenv(ds.GOOGLE_PLACES_API_KEY_ENV_VAR, "fake-places-key")
+    calls = []
+
+    def fake_search(query, api_key, timeout=15):
+        calls.append(query)
+        return [{"websiteUri": "https://topinvestment.pl/"}]
+
+    monkeypatch.setattr(ds, "_search_places", fake_search)
+    site1 = ds.lookup_website_via_places("TOP INVESTMENT Sp. z o.o.", "Piaseczno")
+    site2 = ds.lookup_website_via_places("TOP INVESTMENT Sp. z o.o.", "Piaseczno")
+    assert len(calls) == 1  # drugie wywolanie trafia w cache Places
+    assert site1.url == site2.url == "https://topinvestment.pl/"
+
+
+def test_lookup_website_via_places_not_found_expires_after_ttl(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    monkeypatch.setenv(ds.GOOGLE_PLACES_API_KEY_ENV_VAR, "fake-places-key")
+    monkeypatch.setattr(ds, "_search_places", lambda query, api_key, timeout=15: [])
+
+    assert ds.lookup_website_via_places("Nieznana Firma Sp. z o.o.", "Piaseczno") is None
+
+    conn = ds._cache_connect()
+    try:
+        cache_key = f"{ds._norm('Nieznana Firma Sp. z o.o.')}|{ds._norm('Piaseczno')}"
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=31)).isoformat()
+        conn.execute("UPDATE places_lookup SET checked_at = ? WHERE cache_key = ?", (old_ts, cache_key))
+        conn.commit()
+        hit, _ = ds._places_cache_get(conn, cache_key)
+        assert not hit  # TTL wygasl -> traktowane jak brak wpisu, trzeba odpytac ponownie
+    finally:
+        conn.close()
+
+
+def test_find_developer_site_uses_places_before_brave(monkeypatch):
+    """Places daje wynik -> Brave NIGDY nie jest odpytywany (Places jest
+    sygnalem podstawowym, sprawdzanym jako pierwszy)."""
+    monkeypatch.setenv(ds.GOOGLE_PLACES_API_KEY_ENV_VAR, "fake-places-key")
+    monkeypatch.setattr(ds, "_search_places",
+                         lambda query, api_key, timeout=15: [{"websiteUri": "https://topinvestment.pl/"}])
+    brave_calls = []
+    monkeypatch.setattr(ds, "_search_brave", lambda *a, **k: brave_calls.append(1))
+
+    site = ds.find_developer_site("TOP INVESTMENT Sp. z o.o.", miejscowosc="Piaseczno")
+    assert site.status == ds.STATUS_CONFIRMED
+    assert site.url == "https://topinvestment.pl/"
+    assert not brave_calls
+
+
+def test_find_developer_site_falls_back_to_brave_when_places_empty(monkeypatch):
+    """Places nic nie znajduje -> normalny fallback do Brave, bez zmian w
+    logice sciezki Brave (regresja: upewnia sie, ze dodanie Places nie
+    zepsulo istniejacego zachowania)."""
+    monkeypatch.setenv(ds.GOOGLE_PLACES_API_KEY_ENV_VAR, "fake-places-key")
+    monkeypatch.setattr(ds, "_search_places", lambda query, api_key, timeout=15: [])
+    monkeypatch.setattr(ds, "_search_brave",
+                         lambda query, api_key, timeout=15: [
+                             {"url": "https://topinvestment.pl/", "title": "Top Investment", "description": "deweloper"}
+                         ])
+    monkeypatch.setattr(ds.time, "sleep", lambda *a: None)
+    monkeypatch.setattr(ds.requests, "get", lambda *a, **k: _FakeResp(text="brak numeru"))
+
+    site = ds.find_developer_site("TOP INVESTMENT Sp. z o.o.", miejscowosc="Piaseczno")
+    assert site.status == ds.STATUS_LIKELY  # sciezka Brave, dowod domenowy bez NIP
+    assert site.url == "https://topinvestment.pl/"

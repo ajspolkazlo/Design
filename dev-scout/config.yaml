@@ -117,6 +117,13 @@ investor_filter:
     - "deweloper"
     - "budownictwo"
     - "nieruchomosci"
+  # Wyszukiwanie strony dewelopera (Zadanie 3, src/developer_search.py) uzywa
+  # tej samej listy sygnalow, zeby pomijac osoby fizyczne. Sygnal PODSTAWOWY
+  # (przed Brave Search) to Google Places API (New) Text Search — wlacza sie
+  # samym ustawieniem zmiennej srodowiskowej GOOGLE_PLACES_API_KEY (jak
+  # BRAVE_SEARCH_API_KEY/CEIDG_API_TOKEN wyzej/nizej) — zero zmian w kodzie,
+  # bez klucza ten krok jest po prostu pomijany (fallback do Brave).
+  # Rejestracja/klucz: https://console.cloud.google.com/apis/library/places-backend.googleapis.com
 
 known_large_developers:
   # znani, duzi deweloperzy z pelnym budzetem marketingowym — odrzucamy od razu,

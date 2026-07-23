@@ -130,7 +130,7 @@ def step_enrich(cfg: dict) -> None:
         # ladowane sa jako "prawdopodobna" najwyzej.
         try:
             dev_site = developer_search.find_developer_site(
-                lead["inwestor"] or "", nip=(info.nip if info else None))
+                lead["inwestor"] or "", nip=(info.nip if info else None), miejscowosc=lead["miejscowosc"])
         except Exception:
             log.exception("Nie udalo sie wyszukac strony dewelopera dla %s", lead["id_sprawy"])
             dev_site = developer_search.DeveloperSite(investor=lead["inwestor"] or "")

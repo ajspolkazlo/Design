@@ -460,3 +460,33 @@ Zdiagnozowane na żywo dla wszystkich 3 zgłoszonych przypadków:
   ma — patrz Zadanie 2), więc w tej chwili realnie korzysta tylko z NIP z
   CEIDG (gdy token ustawiony) — status `potwierdzona` będzie w praktyce
   rzadszy niż mógłby być, gdyby KRS był łatwiej dostępny.
+
+### Dodatek — Google Places API jako sygnał podstawowy (po rundzie Zadań 0-4)
+
+`developer_search.lookup_website_via_places()` sprawdza Google Places API
+(New) Text Search PRZED Brave Search — zapytanie `"{inwestor} {miejscowość}"`,
+`fieldMask` ograniczony do `id,displayName,websiteUri,formattedAddress`.
+Niepuste `websiteUri` (po odfiltrowaniu domen portali/agregatorów) daje od
+razu `potwierdzona`, BEZ dodatkowej walidacji NIP/tekstu — Google już
+zweryfikował powiązanie firma↔strona przez Google Moja Firma, więc to
+mocniejszy dowód niż cokolwiek wyciągalne z wyników wyszukiwarki tekstowej.
+Brak klucza / błąd sieciowy / brak wyniku → `None`, `find_developer_site`
+spada na dotychczasową ścieżkę Brave bez żadnej zmiany w jej logice.
+
+- ✅ Klucz przez `GOOGLE_PLACES_API_KEY`, pipeline działa dalej bez niego
+  (ten krok jest po prostu pomijany) — zweryfikowane testem
+  (`test_lookup_website_via_places_no_key_returns_none_without_network`).
+- ✅ Osobny cache SQLite (`places_lookup`, tabela w tym samym pliku co cache
+  Brave) kluczowany po `nazwa+miejscowość` (Places jest zapytywane per
+  lokalizacja, w odróżnieniu od cache wyniku końcowego, kluczowanego samą
+  nazwą) — ten sam wzorzec TTL co reszta modułu: `potwierdzona` bez
+  wygasania, "brak wyniku" z TTL 30 dni.
+- ⚠️ **Nieprzetestowane na żywo** — brak dostępnego klucza
+  `GOOGLE_PLACES_API_KEY` w tej sesji. Zweryfikowane wyłącznie testami
+  jednostkowymi z zamockowanym `_search_places`
+  (`tests/test_developer_search.py`, sekcja "Google Places: sygnał
+  podstawowy" — 9 nowych testów, w tym przypadek z `websiteUri` → potwierdzona,
+  przypadek bez wyniku → fallback do Brave, filtrowanie domen portali,
+  błąd sieciowy nie trafia do cache, TTL). Zalecane: pierwszy żywy przebieg
+  z realnym kluczem, żeby potwierdzić rzeczywisty format odpowiedzi Places
+  API (New) zgadza się z założeniami z dokumentacji Google użytymi tutaj.

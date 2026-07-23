@@ -11,21 +11,33 @@ skala statusu zamiast prostego znaleziono/nie).
    spolki w nazwie — te same sygnaly co filters.looks_like_company) — zbyt
    wysokie ryzyko falszywego trafienia (samo imie+nazwisko to za malo, zeby
    bezpiecznie znalezc "tej" osoby strone w internecie).
-2. Dla spolek: do 3 wariantow zapytania do Brave Search, PRZERYWA na
-   pierwszym, ktory daje wynik przechodzacy filtry ponizej (budzet zapytan).
-3. Odrzuca domeny portali nieruchomosci (ta sama lista co portal_check.py) i
+2. PODSTAWOWY sygnal: Google Places API (New) Text Search
+   (lookup_website_via_places) — zapytanie "{nazwa} {miejscowosc}", i jesli
+   Google zwroci niepuste websiteUri, od razu "potwierdzona" BEZ dodatkowej
+   walidacji tekstowej (Google juz zweryfikowal powiazanie firma<->strona
+   przez Google Moja Firma — silniejszy dowod niz cokolwiek, co da sie
+   wywnioskowac z wynikow wyszukiwarki tekstowej). Brak klucza API / brak
+   wyniku -> spada do kroku 3 (fallback), bez bledu.
+3. Fallback, gdy Places nic nie dal: dla spolek do 3 wariantow zapytania do
+   Brave Search, PRZERYWA na pierwszym, ktory daje wynik przechodzacy filtry
+   ponizej (budzet zapytan).
+4. Odrzuca domeny portali nieruchomosci (ta sama lista co portal_check.py) i
    krotka blocklist agregatorow/mediow z config.yaml. Facebook/LinkedIn/
    Instagram to fallback drugiej kategorii — nigdy glowny wynik.
-4. Ranking: nazwa domeny zawiera fragment marki inwestora (fuzzy) = najwyzszy
-   priorytet; nazwa inwestora w tytule/opisie wyniku = sredni.
-5. Walidacja: pobiera strone glowna kandydata, szuka NIP/KRS (jesli znany z
-   company_lookup) i/lub pelnej nazwy inwestora w tresci. Wynik:
-   "potwierdzona" (NIP/KRS sie zgadza) / "prawdopodobna" (sama nazwa) /
-   "kandydat_niepewny" (trafiono cos, walidacja sie nie powiodla, LUB
-   kandydat to Facebook/LinkedIn/Instagram) / "brak_do_wyszukania_osoba_fizyczna"
-   (krok 1) / "nie_znaleziono".
-6. Cache trwaly (SQLite) po znormalizowanej nazwie — wynik pozytywny bez
-   wygasania, "nie znaleziono" z TTL 30 dni (nazwa moze pozniej dostac strone).
+5. Ranking (tylko sciezka Brave — Places nie potrzebuje rankingu, patrz
+   krok 2): nazwa domeny zawiera fragment marki inwestora (fuzzy) =
+   najwyzszy priorytet; nazwa inwestora w tytule/opisie wyniku = sredni.
+6. Walidacja (tylko sciezka Brave): pobiera strone glowna kandydata, szuka
+   NIP/KRS (jesli znany z company_lookup) w tresci. Wynik:
+   "potwierdzona" (Places z websiteUri, ALBO Brave + NIP/KRS sie zgadza) /
+   "prawdopodobna" (Brave, sama nazwa domeny) / "kandydat_niepewny" (Brave,
+   trafiono cos, walidacja sie nie powiodla, LUB kandydat to Facebook/
+   LinkedIn/Instagram) / "brak_do_wyszukania_osoba_fizyczna" (krok 1) /
+   "nie_znaleziono".
+7. Cache trwaly (SQLite) — osobne tabele dla Places (po nazwa+miejscowosc) i
+   dla wyniku koncowego (po znormalizowanej nazwie, obejmuje tez sciezke
+   Brave). Wynik pozytywny bez wygasania, "nie znaleziono" z TTL 30 dni
+   (nazwa moze pozniej dostac strone).
 """
 
 from __future__ import annotations
@@ -51,6 +63,14 @@ CACHE_DB_PATH = ROOT / "data" / "developer_search_cache.sqlite3"
 BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
 BRAVE_API_KEY_ENV_VAR = "BRAVE_SEARCH_API_KEY"  # ta sama zmienna co portal_check.py
 NOT_FOUND_TTL_DAYS = 30  # wynik "nie znaleziono" wygasa; "znaleziono" nie (patrz docstring modulu)
+
+# Google Places API (New) — Text Search, sygnal PODSTAWOWY (patrz docstring
+# modulu, krok 2), sprawdzany przed Brave Search. Klucz opcjonalny — bez
+# niego ten krok jest po prostu pomijany (pipeline dziala dalej na fallbacku
+# Brave), zgodnie z zasada "nigdy nie wymagaj logowania/klucza, zeby dzialac".
+PLACES_SEARCH_TEXT_URL = "https://places.googleapis.com/v1/places:searchText"
+GOOGLE_PLACES_API_KEY_ENV_VAR = "GOOGLE_PLACES_API_KEY"
+PLACES_FIELD_MASK = "places.id,places.displayName,places.websiteUri,places.formattedAddress"
 
 _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
        "(KHTML, like Gecko) Chrome/124.0 Safari/537.36")
@@ -162,6 +182,76 @@ def _query_variants(investor: str) -> list[str]:
     ]
 
 
+def _search_places(query: str, api_key: str, timeout: int = 15) -> list[dict]:
+    """Google Places API (New) Text Search. fieldMask ograniczony do pol
+    faktycznie potrzebnych (Places API rozlicza koszt zapytania czesciowo wg
+    liczby zadanych pol) — patrz PLACES_FIELD_MASK."""
+    resp = requests.post(
+        PLACES_SEARCH_TEXT_URL,
+        json={"textQuery": query},
+        headers={
+            "Content-Type": "application/json",
+            "X-Goog-Api-Key": api_key,
+            "X-Goog-FieldMask": PLACES_FIELD_MASK,
+        },
+        timeout=timeout,
+    )
+    resp.raise_for_status()
+    return resp.json().get("places", [])
+
+
+def lookup_website_via_places(investor: str, miejscowosc: str | None, timeout: int = 15) -> DeveloperSite | None:
+    """Sygnal PODSTAWOWY, silniejszy niz Brave Search (patrz docstring
+    modulu, krok 2) — Google juz zweryfikowal powiazanie firma<->strona przez
+    Google Moja Firma, wiec niepuste `websiteUri` od razu daje status
+    'potwierdzona' BEZ dodatkowej walidacji tekstowej (w odroznieniu od
+    kandydatow ze sciezki Brave, patrz _validate_nip).
+
+    Zwraca None (NIE DeveloperSite ze statusem nie_znaleziono) w kazdym
+    przypadku, gdy wolujacy (find_developer_site) ma spasc na fallback Brave:
+    brak klucza API, blad sieciowy, brak wyniku, albo zaden wynik nie ma
+    uzytecznego websiteUri (pusty / domena portalu-agregatora)."""
+    api_key = os.environ.get(GOOGLE_PLACES_API_KEY_ENV_VAR)
+    if not api_key:
+        return None
+
+    cache_key = f"{_norm(investor)}|{_norm(miejscowosc or '')}"
+    conn = _cache_connect()
+    try:
+        hit, cached_website = _places_cache_get(conn, cache_key)
+        if hit:
+            if cached_website:
+                return DeveloperSite(
+                    investor=investor, url=cached_website, status=STATUS_CONFIRMED,
+                    matched_on="Google Places (Google Moja Firma) — website zweryfikowany przez Google",
+                )
+            return None  # zapamietane "brak wyniku", wciaz w ramach TTL
+
+        query = f"{investor} {miejscowosc or ''}".strip()
+        try:
+            places = _search_places(query, api_key, timeout=timeout)
+        except requests.RequestException:
+            log.warning("developer_search: zapytanie Places nie powiodlo sie dla %r", query, exc_info=True)
+            return None  # blad sieciowy -> fallback do Brave; NIE cache'ujemy bledu jako "nie znaleziono"
+
+        website = None
+        for place in places:
+            candidate = (place.get("websiteUri") or "").strip()
+            if candidate and not _is_blocked_domain(_domain_of(candidate)):
+                website = candidate
+                break
+
+        _places_cache_put(conn, cache_key, website)
+        if website:
+            return DeveloperSite(
+                investor=investor, url=website, status=STATUS_CONFIRMED,
+                matched_on="Google Places (Google Moja Firma) — website zweryfikowany przez Google",
+            )
+        return None
+    finally:
+        conn.close()
+
+
 def _search_brave(query: str, api_key: str, timeout: int = 15) -> list[dict]:
     resp = requests.get(
         BRAVE_SEARCH_URL,
@@ -263,7 +353,50 @@ def _cache_connect() -> sqlite3.Connection:
             checked_at TEXT DEFAULT (datetime('now'))
         )"""
     )
+    # Cache osobny od developer_sites (klucz obejmuje miejscowosc, nie tylko
+    # nazwe — Places jest zapytywane per nazwa+miejscowosc, patrz
+    # lookup_website_via_places), analogiczny do cache Brave: "znaleziono"
+    # bez wygasania, "brak wyniku" z TTL (patrz _places_cache_get).
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS places_lookup (
+            cache_key TEXT PRIMARY KEY,
+            website_uri TEXT,
+            found INTEGER,
+            checked_at TEXT DEFAULT (datetime('now'))
+        )"""
+    )
     return conn
+
+
+def _places_cache_get(conn: sqlite3.Connection, cache_key: str) -> tuple[bool, str | None]:
+    """(trafiono_w_cache, website_uri). `website_uri` None przy trafieniu
+    oznacza zapamietane "brak wyniku" (w ramach TTL) — patrz
+    lookup_website_via_places, gdzie to rozroznienie decyduje o fallbacku."""
+    row = conn.execute(
+        "SELECT website_uri, found, checked_at FROM places_lookup WHERE cache_key = ?", (cache_key,)
+    ).fetchone()
+    if row is None:
+        return False, None
+    website_uri, found, checked_at = row
+    if not found:
+        try:
+            checked_dt = datetime.fromisoformat(checked_at).replace(tzinfo=timezone.utc)
+        except ValueError:
+            return False, None
+        if datetime.now(timezone.utc) - checked_dt > timedelta(days=NOT_FOUND_TTL_DAYS):
+            return False, None  # TTL wygasl — nazwa mogla pozniej dostac wpis w Google Moja Firma
+    return True, website_uri
+
+
+def _places_cache_put(conn: sqlite3.Connection, cache_key: str, website_uri: str | None) -> None:
+    conn.execute(
+        """INSERT INTO places_lookup (cache_key, website_uri, found, checked_at)
+           VALUES (?, ?, ?, datetime('now'))
+           ON CONFLICT(cache_key) DO UPDATE SET
+             website_uri=excluded.website_uri, found=excluded.found, checked_at=excluded.checked_at""",
+        (cache_key, website_uri, int(bool(website_uri))),
+    )
+    conn.commit()
 
 
 def _cache_get(conn: sqlite3.Connection, name_key: str) -> DeveloperSite | None:
@@ -297,9 +430,12 @@ def _cache_put(conn: sqlite3.Connection, name_key: str, site: DeveloperSite) -> 
 
 # ------------------------------ glowna funkcja ------------------------------
 
-def find_developer_site(investor: str, nip: str | None = None) -> DeveloperSite:
+def find_developer_site(investor: str, nip: str | None = None, miejscowosc: str | None = None) -> DeveloperSite:
     """Punkt wejscia. `nip` opcjonalny (z company_lookup.CompanyInfo.nip,
-    jesli akurat znany) — wzmacnia walidacje do statusu 'potwierdzona'."""
+    jesli akurat znany) — wzmacnia walidacje sciezki Brave do statusu
+    'potwierdzona'. `miejscowosc` opcjonalna (z RWDZ) — uzywana do budowy
+    zapytania Google Places (patrz lookup_website_via_places), sygnalu
+    PODSTAWOWEGO sprawdzanego przed Brave Search."""
     if not investor or not investor.strip():
         return DeveloperSite(investor=investor, status=STATUS_NOT_FOUND)
     if is_individual(investor):
@@ -311,6 +447,15 @@ def find_developer_site(investor: str, nip: str | None = None) -> DeveloperSite:
         cached = _cache_get(conn, name_key)
         if cached is not None:
             return DeveloperSite(investor=investor, url=cached.url, status=cached.status, matched_on=cached.matched_on)
+
+        # Sygnal PODSTAWOWY: Google Places API — silniejszy niz Brave, bo
+        # Google juz zweryfikowal firma<->strona przez Google Moja Firma.
+        # Brak klucza / brak wyniku -> None, spadamy na fallback Brave nizej
+        # (patrz docstring lookup_website_via_places).
+        places_site = lookup_website_via_places(investor, miejscowosc)
+        if places_site is not None:
+            _cache_put(conn, name_key, places_site)
+            return places_site
 
         api_key = os.environ.get(BRAVE_API_KEY_ENV_VAR)
         if not api_key:
