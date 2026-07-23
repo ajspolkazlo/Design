@@ -1,0 +1,262 @@
+# Konfiguracja Dev Scout — wykrywacz małych deweloperów w promieniu 20-30 km od Warszawy
+#
+# UWAGA: to jest punkt startowy. Dokładne nazwy gmin/powiatów i słowa kluczowe
+# trzeba zweryfikować po pierwszym realnym imporcie danych z RWDZ (patrz CLAUDE.md, krok 1).
+
+region:
+  wojewodztwo: "mazowieckie"
+  # Gminy w promieniu ok. 20-30 km od Warszawy (do doprecyzowania po pierwszym imporcie —
+  # w RWDZ gmina bywa zapisana jako "gmina Piaseczno", "m. Piaseczno", "Piaseczno" itp.)
+  gminy:
+    - Piaseczno
+    - Konstancin-Jeziorna
+    - Lesznowola
+    - Prazmow
+    - Gora Kalwaria
+    - Nadarzyn
+    - Raszyn
+    - Michalowice
+    - Brwinow
+    - Pruszkow
+    - Ozarow Mazowiecki
+    - Lomianki
+    - Izabelin
+    - Stare Babice
+    - Lomianki
+    - Legionowo
+    - Jablonna
+    - Nieporet
+    - Wolomin
+    - Marki
+    - Zabki
+    - Zielonka
+    - Kobylka
+    - Radzymin
+    - Jozefow
+    - Otwock
+    - Wiazowna
+    - Karczew
+    - Celestynow
+    - Grodzisk Mazowiecki
+    - Milanowek
+    - Podkowa Lesna
+
+  # gminy do wykluczenia mimo pasującej nazwy powiatu (np. sama Warszawa)
+  wyklucz:
+    - Warszawa
+
+building_types:
+  # słowa kluczowe wyszukiwane w kolumnie z opisem zamierzenia (nazwa_zam_budowlanego),
+  # case-insensitive, bez ogonków.
+  #
+  # Zweryfikowane na realnym pliku wynik_mazowieckie.csv (680k wierszy): rzeczywiste
+  # opisy są bardzo zmienne w formie ("trzy budynki mieszkalne jednorodzinne w zabudowie
+  # szeregowej", "budowa dwóch budynków ... w zabudowie bliźniaczej" itp.) — pełne frazy
+  # z pierwotnej wersji configu łapały tylko 129/8697 (szeregowa) i 229/14963 (bliźniacza)
+  # realnych trafień. Krótsze frazy poniżej łapią całość.
+  include_keywords:
+    - "w zabudowie szeregowej"
+    - "w zabudowie bliźniaczej"
+    - "w zabudowie wolnostojącej"
+    - "jednorodzinnego wolnostojącego"
+    - "jednorodzinnych wolnostojących"
+    - "wolnostojący"          # łapie pojedyncze domy wolnostojące (na życzenie Adama)
+    - "wielorodzinn"          # łapie wielorodzinny/wielorodzinne/wielorodzinnych
+    - "zespol budynkow mieszkalnych jednorodzinnych"
+
+  # Słowa kluczowe WYKLUCZAJĄCE — jeśli opis je zawiera, rekord odpada, nawet gdy
+  # pasuje do include_keywords. Bez tego do wyników trafiały "kwiatki" typu:
+  #   "Budowa ośmiu instalacji gazowych ... czterech budynków ... w zabudowie szeregowej"
+  #   "budowa sieci wodociągowej i kanalizacji sanitarnej dla trzech budynków ... wielorodzinnych"
+  # czyli pozwolenia na INSTALACJE i SIECI przy budynkach, a nie na same budynki.
+  # (zweryfikowane na żywo — te trzy pierwsze wpisy usuwają ~10.5k śmieci z 41k trafień)
+  exclude_keywords:
+    - "instalacj"        # instalacje gazowe / elektryczne / wod-kan wewnętrzne
+    - "sieci"            # sieci wodociągowe / kanalizacyjne / gazowe / elektroenergetyczne
+    - "siec "
+    - "kanalizacj"
+    - "wodociag"
+    - "przylacz"         # przyłącza
+    - "zjazd"            # zjazd z drogi
+    - "ogrodzenie"
+    - "wiata"
+    - "maszt"
+    - "stacja"           # stacja transformatorowa / bazowa
+    - "parking"
+    - "oczyszczalni"     # przydomowa oczyszczalnia jako główny przedmiot
+    - "zbiornik"         # zbiornik / szambo jako główny przedmiot
+    - "studni"
+    - "slup"
+    - "napowietrzn"      # linia napowietrzna
+    - "telekomunik"
+
+  # Wymagaj, żeby "rodzaj zamierzenia" (kolumna nazwa_zamierzenia_bud) był budową
+  # NOWEGO obiektu — odcina rozbiórki, rozbudowy, nadbudowy, odbudowy i "wykonanie
+  # robót budowlanych innych" (to ostatnie łapało większość instalacji). Realny
+  # rejestr ma dokładnie wartość "budowa nowego/nowych obiektów budowlanych".
+  require_new_construction: true
+  new_construction_hint: "budowa nowego"
+
+# Filtr daty — bierzemy tylko wnioski złożone od tej daty (kolumna data_wplywu_wniosku).
+# Na życzenie Adama zawężone do wniosków od 2024 — starsze zgłoszenia to nieaktualne
+# leady (inwestycja dawno sprzedana albo porzucona).
+date_filter:
+  min_data: "2024-01-01"
+
+investor_filter:
+  # odrzucamy zgłoszenia gdzie inwestor to wyraźnie osoba fizyczna (imię nazwisko, brak formy prawnej)
+  # i zostawiamy tylko wpisy, które wyglądają na firmę (patrz src/filters.py: looks_like_company)
+  company_signals:
+    - "sp. z o.o."
+    - "sp.k."
+    - "s.a."
+    - "spolka"
+    - "grupa"
+    - "invest"
+    - "development"
+    - "deweloper"
+    - "budownictwo"
+    - "nieruchomosci"
+  # Wyszukiwanie strony dewelopera (Zadanie 3, src/developer_search.py) uzywa
+  # tej samej listy sygnalow, zeby pomijac osoby fizyczne. Sygnal SPRAWDZANY
+  # NAJPIERW to zgadywanie domeny wprost z nazwy inwestora
+  # (guess_developer_domain) — DARMOWE, zero klucza API. Dopiero potem, gdy
+  # to nic nie da, PODSTAWOWY sygnal wymagajacy klucza to Google Places API
+  # (New) Text Search — wlacza sie samym ustawieniem zmiennej srodowiskowej
+  # GOOGLE_PLACES_API_KEY (jak BRAVE_SEARCH_API_KEY/CEIDG_API_TOKEN wyzej/
+  # nizej) — zero zmian w kodzie, bez klucza ten krok jest po prostu
+  # pomijany (fallback do Brave).
+  # Rejestracja/klucz: https://console.cloud.google.com/apis/library/places-backend.googleapis.com
+
+developer_search:
+  # Darmowe warstwy ODKRYWANIA strony dewelopera (src/developer_search.py) —
+  # sprawdzane po zgadywaniu domeny, a przed płatnymi Places/Brave. Każdy
+  # znaleziony kandydat przechodzi tę samą rygorystyczną walidację (token
+  # marki w domenie + NIP/KRS ze stopki → oficjalne API KRS), więc luźniejsze
+  # źródło NIE luzuje kontroli fałszywych pozytywów.
+  enable_crtsh: true       # Opcja B: Certificate Transparency (crt.sh) — publiczne logi SSL, bywa przeciążone (graceful)
+  enable_duckduckgo: true  # Opcja A: DuckDuckGo HTML — rankuje po trafności, ale blokuje po 1-2 zapytaniach (ToS-szara strefa)
+
+known_large_developers:
+  # znani, duzi deweloperzy z pelnym budzetem marketingowym — odrzucamy od razu,
+  # zeby nie zasmiecac wynikow oczywistosciami
+  - "Dom Development"
+  - "Atal"
+  - "Murapol"
+  - "Ronson"
+  - "Robyg"
+  - "Echo Investment"
+  - "Archicom"
+  - "Nexity"
+  - "Bouygues Immobilier"
+  - "J.W. Construction"
+  - "Marvipol"
+  - "Unidevelopment"
+  - "Develia"
+  - "Victoria Dom"
+
+scale_filter:
+  # Liczba budynków jest teraz WYCIĄGANA z tekstu opisu (filters.extract_building_count):
+  # z liczebników ("dwóch/trzech/czterech budynków") i cyfr ("budowa 4 budynków ...").
+  # Realny eksport RWDZ nie ma osobnej kolumny z liczbą budynków, więc to jedyne źródło.
+  min_budynkow: 1   # UWAGA: 1 = wpuszczamy pojedyncze domy wolnostojące (na życzenie Adama).
+                    #        Ustaw 2, żeby odciąć domy "buduję dla siebie" i zostawić tylko
+                    #        realne inwestycje wielobudynkowe.
+  max_budynkow: 40  # powyżej tego to raczej duży gracz z własnym działem marketingu — odcinamy
+  # gdy liczby nie da się wyciągnąć z opisu, NIE odrzucamy (lepiej przepuścić niż zgubić leada)
+
+portal_check:
+  # NAJWAŻNIEJSZY backend: Search API (Brave Search). Jedno zapytanie z
+  # filtrem site: pokrywa WSZYSTKIE portale naraz — wliczając Otodom, którego
+  # żaden inny backend tu nie obsłuży bezpiecznie. Włącza się samym ustawieniem
+  # zmiennej środowiskowej BRAVE_SEARCH_API_KEY (jak CEIDG_API_TOKEN) — zero
+  # zmian w kodzie. Rejestracja: https://api-dashboard.search.brave.com
+  # (plan z darmowymi kredytami co miesiąc, bez wymogu polskiej tożsamości —
+  # dużo mniejsze tarcie niż CEIDG). Zweryfikowane na żywo (WebSearch, ręcznie):
+  # trafnie znajduje realne oferty, poprawnie nie znajduje nic dla
+  # nieistniejących adresów. Patrz src/portal_check.py po pełny opis.
+
+  # Portale sprawdzane backendem HTTP (dziś realnie tylko OLX — jego endpoint
+  # /api/v1/offers jest dozwolony w robots.txt i zweryfikowany na żywo).
+  # Sprawdzany ZAWSZE, niezależnie od klucza search API (darmowy, redundancja).
+  portale:
+    - olx
+
+  # Portale sprawdzane backendem BROWSER (prawdziwy Chromium/Playwright) —
+  # dla tych, które blokują goły HTTP (Otodom) albo renderują wyniki JS-em.
+  # Uruchamiane TYLKO gdy enable_browser: true. Patrz src/portal_check.py po
+  # pełny opis granicy etycznej i sytuacji ToS/robots każdego z nich.
+  browser_portals:
+    - otodom
+    - rynekpierwotny
+    - morizon
+    - gratka
+    - domiporta
+
+  # DOMYŚLNIE WYŁĄCZONE. Włącz (true) NA MASZYNIE, z której uruchamiasz pipeline
+  # (najlepiej polskie IP domowe Adama) — wtedy backend browser realnie działa.
+  # W sandboxie CI/serwerowni i tak nie zadziała (proxy nie przepuszcza Chromium)
+  # i część portali blokuje IP z datacenter. Ustawiając true akceptujesz ryzyko
+  # ToS portali, których robots.txt zabrania automatycznego wyszukiwania
+  # (RynekPierwotny/Morizon/Domiporta — patrz komentarze w portal_check.py).
+  enable_browser: false
+  browser_headless: true
+
+  # Szablony URL wyszukiwania dla backendu browser. {query} = URL-encoded
+  # "ulica, miejscowosc". Do zweryfikowania przy pierwszym realnym uruchomieniu
+  # (formaty URL portali się zmieniają) — nadpisują domyślne z portal_check.py.
+  search_url_templates:
+    otodom: "https://www.otodom.pl/pl/wyniki/sprzedaz/dom/cala-polska?ownerTypeSingleSelect=ALL&by=LATEST&direction=DESC&search=%5Bfilter_search%5D={query}"
+    rynekpierwotny: "https://rynekpierwotny.pl/s/?phrase={query}"
+    morizon: "https://www.morizon.pl/do-kupienia/?ps%5Bquery%5D={query}"
+    gratka: "https://gratka.pl/nieruchomosci?keyword={query}"
+    domiporta: "https://www.domiporta.pl/nieruchomosci/sprzedam?Keywords={query}"
+
+  recheck_after_days: 14  # co ile dni ponownie sprawdzać tego samego leada
+
+verify:
+  # Weryfikacja dopasowania lead<->ogłoszenie (src/verify.py). Sygnały:
+  # geometria (pin ogłoszenia vs poligon działki z ULDK), rynek pierwotny/wtórny,
+  # data ogłoszenia vs data wniosku, metraż vs kubatura, działka vs ewidencja
+  # gruntów, kategoria właściciela działki (KIEG WMS), seryjność inwestora w RWDZ.
+  confirm_distance_m: 150     # pin ogłoszenia ≤ tego = potwierdzenie geograficzne
+  likely_distance_m: 700      # do tego progu = sąsiedztwo / rozmycie pinu
+  reject_distance_m: 2000     # dalej = inna lokalizacja, dopasowanie odrzucone
+  kubatura_div_lo: 4.0        # widełki metrażu: kubatura/5.5 … kubatura/4.0
+  kubatura_div_hi: 5.5        # (kalibracja na realnych parach oferta<->wniosek, 07.2026)
+  listing_age_tolerance_days: 120  # ogłoszenie starsze od wniosku o więcej -> podejrzane
+  serial_investor_min: 3      # tyle wniosków w RWDZ = "seryjny inwestor" (deweloper)
+
+scoring:
+  # scoring 0-100 zamiast twardego filtra — sortujemy, nie odrzucamy agresywnie
+  weights:
+    brak_na_portalach: 40
+    mala_firma_bez_www: 20
+    swiezy_wpis: 15       # < 30 dni od daty zgloszenia/decyzji
+    mala_skala: 15        # 2-10 budynkow = bardziej "boutique"
+    bliska_odleglosc: 10  # blizej centrum Warszawy w ramach 20-30 km
+    # Wagi korzystajace z werdyktow src/verify.py (patrz docs/AUDYT.md, sekcja 3
+    # poprzedniej wersji audytu — to byla najwieksza luka: scoring w ogole nie
+    # czytal verify_json).
+    kara_potwierdzone_na_portalu: 30  # werdykt CONFIRMED = inwestycja juz reklamowana, odejmowane od score
+    seryjny_inwestor: 15              # inwestor ma >= verify.serial_investor_min wnioskow w RWDZ
+    dzialka_spolki: 10                # wlasciciel dzialki (ewidencja gruntow) to spolka prawa handlowego
+  # punkt odniesienia do liczenia odleglosci — Plac Defilad, centrum Warszawy
+  warszawa_centrum:
+    lat: 52.2297
+    lon: 21.0122
+  max_distance_km: 30
+
+paths:
+  raw_dir: "data/raw"
+  db_path: "data/dev_scout.sqlite3"
+  output_dir: "output"
+
+rwdz:
+  # plik per-województwo jest dużo mniejszy niż plik "cały kraj" — to nasze główne źródło
+  wojewodztwo_zip_url: "https://wyszukiwarka.gunb.gov.pl/pliki_pobranie/wynik_mazowieckie.zip"
+  # Zweryfikowane na realnym pliku: separator to ';' (nie '#'), plik ma BOM na
+  # początku, stąd 'utf-8-sig' zamiast 'utf-8' (żeby BOM nie trafił do nazwy
+  # pierwszej kolumny).
+  column_separator: ";"
+  encoding: "utf-8-sig"
