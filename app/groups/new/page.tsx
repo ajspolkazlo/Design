@@ -81,7 +81,7 @@ export default async function NewGroupPage() {
 
         <button
           type="submit"
-          className="w-full rounded-full bg-accent p-3 font-semibold text-white transition-colors duration-200 hover:bg-accent-orange dark:text-black"
+          className="w-full pop rounded-full bg-accent p-3 font-semibold text-white transition-colors duration-200 hover:bg-accent-orange dark:text-black"
         >
           Create group
         </button>

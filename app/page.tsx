@@ -3,7 +3,7 @@ import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/session";
 import { getOverallBalances } from "@/lib/balances";
 import { formatCents } from "@/lib/money";
-import BrandBlobs from "@/components/BrandBlobs";
+import { paletteColor } from "@/lib/palette";
 
 export const dynamic = "force-dynamic";
 
@@ -14,8 +14,7 @@ export default async function DashboardPage() {
   const { perGroup, totals } = await getOverallBalances(me.id);
 
   return (
-    <div className="relative">
-      <BrandBlobs />
+    <div>
       <div className="mb-6 rounded-2xl border border-border bg-card p-5 shadow-sm">
         <h1 className="text-sm font-semibold text-muted">Overall, across all groups</h1>
         {totals.length === 0 || totals.every((t) => t.netCents === 0) ? (
@@ -41,7 +40,7 @@ export default async function DashboardPage() {
         <h2 className="font-display text-lg font-bold">Your groups</h2>
         <Link
           href="/groups/new"
-          className="rounded-full bg-accent px-4 py-2 text-sm font-semibold text-white transition-colors duration-200 hover:bg-accent-orange dark:text-black"
+          className="pop rounded-full bg-accent px-4 py-2 text-sm font-semibold text-white transition-colors duration-200 hover:bg-accent-orange dark:text-black"
         >
           + New group
         </Link>
@@ -53,6 +52,7 @@ export default async function DashboardPage() {
             key={g.groupId}
             href={`/groups/${g.groupId}`}
             className="flex items-center justify-between rounded-2xl border border-border bg-card p-4 shadow-sm transition-colors duration-200 hover:border-accent"
+            style={{ borderTop: `4px solid ${paletteColor(g.groupId)}` }}
           >
             <span className="font-semibold">{g.groupName}</span>
             {g.netCents === 0 ? (

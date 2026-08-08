@@ -86,26 +86,37 @@ body {
   font-family: var(--font-display);
 }
 
-/* Soft gradient blob — pink -> orange -> purple, evokes the festival's
-   balloon/sphere key visuals. Decorative only; keep behind content and
-   never load-bearing for text contrast. */
-.brand-blob {
-  position: absolute;
-  pointer-events: none;
-  border-radius: 999px;
-  filter: blur(60px);
-  opacity: 0.55;
-  background: radial-gradient(
-    circle at 30% 30%,
-    var(--brand-pink) 0%,
-    var(--brand-orange) 45%,
-    var(--brand-purple) 100%
-  );
-  z-index: 0;
+/*
+ * "Sticker" system — the festival's actual identity leans on hand-cut,
+ * poster-and-badge graphics rather than soft AI-gradient blur: a solid ink
+ * outline plus a hard offset shadow that visibly compresses on press, like
+ * a physical button. Used on primary CTAs and the wordmark badge.
+ */
+.pop {
+  border: 2px solid var(--foreground);
+  box-shadow: 3px 3px 0 0 var(--foreground);
+  transition:
+    transform 120ms ease,
+    box-shadow 120ms ease,
+    background-color 200ms ease;
+}
+.pop:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: 4px 4px 0 0 var(--foreground);
+}
+.pop:active {
+  transform: translate(2px, 2px);
+  box-shadow: 1px 1px 0 0 var(--foreground);
+}
+
+/* Chunky offset-shadow text for the wordmark — poster lettering, not a
+   flat AI sans-serif logotype. */
+.wordmark-pop {
+  text-shadow: 3px 3px 0 var(--color-accent-orange);
 }
 
 @media (prefers-color-scheme: dark) {
-  .brand-blob {
-    opacity: 0.35;
+  .wordmark-pop {
+    text-shadow: 3px 3px 0 var(--color-accent-purple);
   }
 }

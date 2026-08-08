@@ -8,7 +8,7 @@ export default async function LoginPage() {
   const users = await prisma.user.findMany({ orderBy: { name: "asc" } });
 
   return (
-    <div className="relative mx-auto max-w-sm pt-8">
+    <div className="relative mx-auto max-w-sm pt-24">
       <BrandBlobs />
       <h1 className="mb-1 font-display text-2xl font-bold lowercase">
         who are you?
@@ -53,7 +53,7 @@ export default async function LoginPage() {
         />
         <button
           type="submit"
-          className="rounded-full bg-accent px-5 py-3 font-semibold text-white transition-colors duration-200 hover:bg-accent-orange dark:text-black"
+          className="pop rounded-full bg-accent px-5 py-3 font-semibold text-white transition-colors duration-200 hover:bg-accent-orange dark:text-black"
         >
           Join
         </button>

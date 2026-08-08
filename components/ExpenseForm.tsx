@@ -287,7 +287,7 @@ export default function ExpenseForm({
       <button
         type="submit"
         disabled={pending}
-        className="w-full rounded-full bg-accent p-3 font-semibold text-white transition-colors duration-200 hover:bg-accent-orange disabled:opacity-60 dark:text-black"
+        className="w-full pop rounded-full bg-accent p-3 font-semibold text-white transition-colors duration-200 hover:bg-accent-orange disabled:opacity-60 dark:text-black"
       >
         {pending ? "Saving…" : expenseId ? "Save changes" : "Add expense"}
       </button>

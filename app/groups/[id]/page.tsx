@@ -5,6 +5,7 @@ import { getCurrentUser } from "@/lib/session";
 import { getGroupBalances } from "@/lib/balances";
 import { formatCents, toGroupCents } from "@/lib/money";
 import { categoryIcon, categoryLabel } from "@/lib/categories";
+import { paletteColor } from "@/lib/palette";
 import DeleteButton from "@/components/DeleteButton";
 import { deletePayment } from "@/app/actions";
 
@@ -88,7 +89,7 @@ export default async function GroupPage({
 
       <Link
         href={`/groups/${id}/expenses/new`}
-        className="fixed bottom-6 left-1/2 -translate-x-1/2 rounded-full bg-accent px-6 py-3.5 text-base font-bold text-white shadow-lg transition-colors duration-200 hover:bg-accent-orange dark:text-black"
+        className="fixed bottom-6 left-1/2 -translate-x-1/2 pop rounded-full bg-accent px-6 py-3.5 text-base font-bold text-white transition-colors duration-200 hover:bg-accent-orange dark:text-black"
       >
         + Add expense
       </Link>
@@ -148,7 +149,11 @@ function ActivityTab({
             href={`/groups/${group.id}/expenses/${item.expense.id}/edit`}
             className="flex items-center gap-3 rounded-2xl border border-border bg-card p-3.5 shadow-sm transition-colors duration-200 hover:border-accent"
           >
-            <span className="text-2xl" title={categoryLabel(item.expense.category)}>
+            <span
+              className="flex size-10 shrink-0 items-center justify-center rounded-full text-lg"
+              style={{ background: paletteColor(item.expense.category) }}
+              title={categoryLabel(item.expense.category)}
+            >
               {categoryIcon(item.expense.category)}
             </span>
             <span className="min-w-0 flex-1">
@@ -278,7 +283,7 @@ async function BalancesTab({
                 </span>
                 <Link
                   href={`/groups/${group.id}/settle?from=${t.fromId}&to=${t.toId}&amount=${(t.amountCents / 100).toFixed(2)}`}
-                  className="shrink-0 rounded-full bg-accent px-3 py-2 text-xs font-bold text-white transition-colors duration-200 hover:bg-accent-orange dark:text-black"
+                  className="pop shrink-0 rounded-full bg-accent px-3 py-2 text-xs font-bold text-white transition-colors duration-200 hover:bg-accent-orange dark:text-black"
                 >
                   Settle
                 </Link>
@@ -315,8 +320,11 @@ async function BalancesTab({
                   </div>
                   <div className="h-2 overflow-hidden rounded-full bg-background">
                     <div
-                      className="h-full rounded-full bg-accent"
-                      style={{ width: `${Math.max(2, (cents / maxCategory) * 100)}%` }}
+                      className="h-full rounded-full"
+                      style={{
+                        width: `${Math.max(2, (cents / maxCategory) * 100)}%`,
+                        background: paletteColor(cat),
+                      }}
                     />
                   </div>
                 </div>
