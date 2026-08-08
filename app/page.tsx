@@ -37,10 +37,10 @@ export default async function DashboardPage() {
       </div>
 
       <div className="mb-3 flex items-center justify-between">
-        <h2 className="font-display text-lg font-bold">Your groups</h2>
+        <h2 className="text-lg font-bold">Your groups</h2>
         <Link
           href="/groups/new"
-          className="pop rounded-full bg-accent px-4 py-2 text-sm font-semibold text-white transition-colors duration-200 hover:bg-accent-orange dark:text-black"
+          className="glossy rounded-full bg-accent px-4 py-2 text-sm font-semibold text-white transition-colors duration-200 hover:bg-accent-orange dark:text-black"
         >
           + New group
         </Link>

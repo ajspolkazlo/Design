@@ -1,12 +1,12 @@
 import type { Metadata, Viewport } from "next";
 import Link from "next/link";
-import { Inter, Space_Mono } from "next/font/google";
+import { Inter, Silkscreen } from "next/font/google";
 import "./globals.css";
 import { getCurrentUser } from "@/lib/session";
 import { logout } from "./actions";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-body" });
-const spaceMono = Space_Mono({
+const silkscreen = Silkscreen({
   subsets: ["latin"],
   weight: ["400", "700"],
   variable: "--font-display-face",
@@ -29,16 +29,16 @@ export default async function RootLayout({
   return (
     <html
       lang="en"
-      className={`h-full antialiased ${inter.variable} ${spaceMono.variable}`}
+      className={`h-full antialiased ${inter.variable} ${silkscreen.variable}`}
     >
       <body className="min-h-full flex flex-col">
         <header className="sticky top-0 z-10 border-b border-border bg-card/95 backdrop-blur">
           <div className="mx-auto flex h-14 w-full max-w-2xl items-center justify-between px-4">
             <Link href="/" className="flex items-center gap-2.5">
-              <span className="pop flex size-8 shrink-0 -rotate-6 items-center justify-center rounded-full bg-accent-vivid font-display text-xs font-bold text-white">
+              <span className="glossy flex size-8 shrink-0 items-center justify-center rounded-full font-display text-[10px] text-white">
                 bs
               </span>
-              <span className="wordmark-pop font-display text-xl font-bold tracking-tight text-foreground lowercase">
+              <span className="font-display text-base tracking-tight text-accent lowercase">
                 bittersplit
               </span>
             </Link>

@@ -28,7 +28,7 @@ export default async function SettlePage({
       <Link href={`/groups/${id}?tab=balances`} className="text-sm text-muted">
         ← {group.name}
       </Link>
-      <h1 className="mt-1 mb-1 font-display text-2xl font-bold">Settle up</h1>
+      <h1 className="mt-1 mb-1 text-2xl font-bold">Settle up</h1>
       <p className="mb-4 text-sm text-muted">
         Record a payment made outside the app (cash, bank transfer, …).
       </p>
@@ -94,7 +94,7 @@ export default async function SettlePage({
 
         <button
           type="submit"
-          className="w-full pop rounded-full bg-accent p-3 font-semibold text-white transition-colors duration-200 hover:bg-accent-orange dark:text-black"
+          className="w-full glossy rounded-full bg-accent p-3 font-semibold text-white transition-colors duration-200 hover:bg-accent-orange dark:text-black"
         >
           Record payment
         </button>

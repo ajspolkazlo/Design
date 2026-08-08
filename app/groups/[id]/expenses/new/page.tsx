@@ -22,7 +22,7 @@ export default async function NewExpensePage({
       <Link href={`/groups/${id}`} className="text-sm text-muted">
         ← {group.name}
       </Link>
-      <h1 className="mt-1 mb-4 font-display text-2xl font-bold">Add expense</h1>
+      <h1 className="mt-1 mb-4 text-2xl font-bold">Add expense</h1>
       <ExpenseForm
         groupId={id}
         groupCurrency={group.currency}

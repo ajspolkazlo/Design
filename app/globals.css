@@ -1,10 +1,11 @@
 @import "tailwindcss";
 
 /*
- * Bittersplit brand tokens — "bittersweet" duality: euphoria + nostalgia,
- * modern + analog, playful + reflective. Cream base, near-black text,
- * hot pink as the single primary accent, secondary accents rotated for
- * gradients, tags, and charts (never more than 2-3 on one screen).
+ * Bittersplit brand tokens, matched to the actual BitterSweet Festival
+ * identity: cream marketing surfaces, near-black text, hot pink as the
+ * primary accent, secondary accents rotated for tags/charts — and a
+ * glossy, pearl-bubble material language (not flat/sticker) for
+ * decorative spheres and buttons, matching their real app's key visual.
  */
 :root {
   /* Raw brand palette */
@@ -57,8 +58,8 @@
 
   --font-sans: var(--font-body), -apple-system, BlinkMacSystemFont, "Segoe UI",
     Roboto, "Helvetica Neue", Arial, sans-serif;
-  --font-display: var(--font-display-face), "Space Mono", "IBM Plex Mono",
-    ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --font-display: var(--font-display-face), "Silkscreen", ui-monospace,
+    "SFMono-Regular", Menlo, monospace;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -87,36 +88,69 @@ body {
 }
 
 /*
- * "Sticker" system — the festival's actual identity leans on hand-cut,
- * poster-and-badge graphics rather than soft AI-gradient blur: a solid ink
- * outline plus a hard offset shadow that visibly compresses on press, like
- * a physical button. Used on primary CTAs and the wordmark badge.
+ * Glossy pearl/bubble material — the festival's real key visual is
+ * translucent, glossy spheres with a bright specular highlight, not flat
+ * shapes or hard sticker outlines. Applied to primary CTAs and decorative
+ * bubbles alike so the whole UI reads as one consistent material.
  */
-.pop {
-  border: 2px solid var(--foreground);
-  box-shadow: 3px 3px 0 0 var(--foreground);
+.glossy {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(
+    165deg,
+    color-mix(in srgb, var(--accent-vivid) 82%, white) 0%,
+    var(--accent) 100%
+  );
+  box-shadow:
+    0 6px 16px -4px color-mix(in srgb, var(--accent-vivid) 55%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    inset 0 -8px 12px -8px rgba(0, 0, 0, 0.3);
   transition:
-    transform 120ms ease,
-    box-shadow 120ms ease,
-    background-color 200ms ease;
+    transform 150ms ease,
+    box-shadow 150ms ease,
+    filter 150ms ease;
 }
-.pop:hover {
-  transform: translate(-1px, -1px);
-  box-shadow: 4px 4px 0 0 var(--foreground);
+.glossy::before {
+  content: "";
+  position: absolute;
+  top: 8%;
+  left: 12%;
+  width: 34%;
+  height: 40%;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.55);
+  filter: blur(4px);
+  pointer-events: none;
 }
-.pop:active {
-  transform: translate(2px, 2px);
-  box-shadow: 1px 1px 0 0 var(--foreground);
+.glossy:hover {
+  filter: brightness(1.05);
+  transform: translateY(-1px);
+}
+.glossy:active {
+  transform: translateY(1px) scale(0.99);
+  box-shadow:
+    0 2px 8px -2px color-mix(in srgb, var(--accent-vivid) 55%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    inset 0 -4px 8px -6px rgba(0, 0, 0, 0.3);
 }
 
-/* Chunky offset-shadow text for the wordmark — poster lettering, not a
-   flat AI sans-serif logotype. */
-.wordmark-pop {
-  text-shadow: 3px 3px 0 var(--color-accent-orange);
+/* Small glossy chip for category icons — same material, no button chrome. */
+.glossy-chip {
+  position: relative;
+  overflow: hidden;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    inset 0 -6px 10px -6px rgba(0, 0, 0, 0.3);
 }
-
-@media (prefers-color-scheme: dark) {
-  .wordmark-pop {
-    text-shadow: 3px 3px 0 var(--color-accent-purple);
-  }
+.glossy-chip::before {
+  content: "";
+  position: absolute;
+  top: 10%;
+  left: 15%;
+  width: 30%;
+  height: 30%;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.55);
+  filter: blur(2px);
+  pointer-events: none;
 }

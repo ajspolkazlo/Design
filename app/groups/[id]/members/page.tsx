@@ -27,7 +27,7 @@ export default async function MembersPage({
       <Link href={`/groups/${id}`} className="text-sm text-muted">
         ← {group.name}
       </Link>
-      <h1 className="mt-1 mb-4 font-display text-2xl font-bold">Members</h1>
+      <h1 className="mt-1 mb-4 text-2xl font-bold">Members</h1>
 
       <ul className="mb-6 space-y-2">
         {group.members.map((m) => (
@@ -63,7 +63,7 @@ export default async function MembersPage({
           </div>
           <button
             type="submit"
-            className="w-full pop rounded-full bg-accent p-3 font-semibold text-white transition-colors duration-200 hover:bg-accent-orange dark:text-black"
+            className="w-full glossy rounded-full bg-accent p-3 font-semibold text-white transition-colors duration-200 hover:bg-accent-orange dark:text-black"
           >
             Add to group
           </button>

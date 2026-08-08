@@ -55,7 +55,7 @@ export default async function EditExpensePage({
           <Link href={`/groups/${id}`} className="text-sm text-muted">
             ← {group.name}
           </Link>
-          <h1 className="mt-1 mb-4 font-display text-2xl font-bold">Edit expense</h1>
+          <h1 className="mt-1 mb-4 text-2xl font-bold">Edit expense</h1>
         </div>
         <DeleteButton
           action={deleteExpense.bind(null, expenseId)}

@@ -51,7 +51,7 @@ export default async function GroupPage({
     <div>
       <div className="mb-4 flex items-start justify-between gap-3">
         <div>
-          <h1 className="font-display text-2xl font-bold">{group.name}</h1>
+          <h1 className="text-2xl font-bold">{group.name}</h1>
           <p className="text-sm text-muted">
             {group.members.map((m) => m.user.name).join(", ")} · {group.currency}
           </p>
@@ -89,7 +89,7 @@ export default async function GroupPage({
 
       <Link
         href={`/groups/${id}/expenses/new`}
-        className="fixed bottom-6 left-1/2 -translate-x-1/2 pop rounded-full bg-accent px-6 py-3.5 text-base font-bold text-white transition-colors duration-200 hover:bg-accent-orange dark:text-black"
+        className="fixed bottom-6 left-1/2 -translate-x-1/2 glossy rounded-full bg-accent px-6 py-3.5 text-base font-bold text-white transition-colors duration-200 hover:bg-accent-orange dark:text-black"
       >
         + Add expense
       </Link>
@@ -150,7 +150,7 @@ function ActivityTab({
             className="flex items-center gap-3 rounded-2xl border border-border bg-card p-3.5 shadow-sm transition-colors duration-200 hover:border-accent"
           >
             <span
-              className="flex size-10 shrink-0 items-center justify-center rounded-full text-lg"
+              className="glossy-chip flex size-10 shrink-0 items-center justify-center rounded-full text-lg"
               style={{ background: paletteColor(item.expense.category) }}
               title={categoryLabel(item.expense.category)}
             >
@@ -283,7 +283,7 @@ async function BalancesTab({
                 </span>
                 <Link
                   href={`/groups/${group.id}/settle?from=${t.fromId}&to=${t.toId}&amount=${(t.amountCents / 100).toFixed(2)}`}
-                  className="pop shrink-0 rounded-full bg-accent px-3 py-2 text-xs font-bold text-white transition-colors duration-200 hover:bg-accent-orange dark:text-black"
+                  className="glossy shrink-0 rounded-full bg-accent px-3 py-2 text-xs font-bold text-white transition-colors duration-200 hover:bg-accent-orange dark:text-black"
                 >
                   Settle
                 </Link>

@@ -16,7 +16,7 @@ export default async function NewGroupPage() {
 
   return (
     <div className="mx-auto max-w-sm">
-      <h1 className="mb-4 font-display text-2xl font-bold">New group</h1>
+      <h1 className="mb-4 text-2xl font-bold">New group</h1>
       <form action={createGroup} className="space-y-5">
         <div>
           <label className="mb-1 block text-sm font-semibold" htmlFor="name">
@@ -81,7 +81,7 @@ export default async function NewGroupPage() {
 
         <button
           type="submit"
-          className="w-full pop rounded-full bg-accent p-3 font-semibold text-white transition-colors duration-200 hover:bg-accent-orange dark:text-black"
+          className="w-full glossy rounded-full bg-accent p-3 font-semibold text-white transition-colors duration-200 hover:bg-accent-orange dark:text-black"
         >
           Create group
         </button>

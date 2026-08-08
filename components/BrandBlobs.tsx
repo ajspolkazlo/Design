@@ -1,8 +1,7 @@
 /**
- * Decorative bubble cluster for hero/login screens — the festival's actual
- * key visual is layered glossy spheres, not a soft AI-gradient blur. Solid
- * color, a light inner highlight for a balloon-like sheen, gently rotated
- * and overlapping. Purely decorative, no interactive role.
+ * Decorative bubble cluster matching the festival's actual key visual:
+ * glossy, translucent pearl spheres with a bright specular highlight and a
+ * soft shadowed underside, not flat circles or a blurred gradient.
  */
 const BUBBLES = [
   { size: 60, top: "-10%", left: "4%", color: "var(--color-accent-vivid)" },
@@ -12,6 +11,15 @@ const BUBBLES = [
   { size: 20, top: "58%", left: "14%", color: "var(--color-accent-mint)" },
   { size: 16, top: "50%", left: "72%", color: "var(--color-accent-purple)" },
 ];
+
+function bubbleStyle(color: string, size: number): React.CSSProperties {
+  return {
+    width: size,
+    height: size,
+    background: `radial-gradient(circle at 32% 26%, rgba(255,255,255,0.95) 0%, rgba(255,255,255,0.35) 16%, ${color} 48%, color-mix(in srgb, ${color} 55%, black) 100%)`,
+    boxShadow: "inset -4px -8px 12px rgba(0,0,0,0.2), 0 3px 8px rgba(0,0,0,0.15)",
+  };
+}
 
 /** Fixed-height bubble strip. Callers should reserve matching top clearance
  * (e.g. pt-28) so headline text sits below it rather than behind it. */
@@ -25,15 +33,7 @@ export default function BrandBlobs() {
         <span
           key={i}
           className="absolute rounded-full"
-          style={{
-            width: b.size,
-            height: b.size,
-            top: b.top,
-            left: b.left,
-            background: b.color,
-            boxShadow:
-              "inset -8px -8px 14px rgba(0,0,0,0.12), inset 5px 6px 10px rgba(255,255,255,0.45)",
-          }}
+          style={{ top: b.top, left: b.left, ...bubbleStyle(b.color, b.size) }}
         />
       ))}
     </div>
