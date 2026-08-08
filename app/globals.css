@@ -1,15 +1,36 @@
 @import "tailwindcss";
 
+/*
+ * Bittersplit brand tokens — "bittersweet" duality: euphoria + nostalgia,
+ * modern + analog, playful + reflective. Cream base, near-black text,
+ * hot pink as the single primary accent, secondary accents rotated for
+ * gradients, tags, and charts (never more than 2-3 on one screen).
+ */
 :root {
-  --background: #f6f7f9;
-  --foreground: #16181d;
+  /* Raw brand palette */
+  --brand-cream: #fbeee9;
+  --brand-ink: #111010;
+  --brand-pink: #ff4c91;
+  --brand-orange: #ff6900;
+  --brand-purple: #3d268e;
+  --brand-blue-violet: #6666ff;
+  --brand-mint: #7bdcb5;
+  --brand-green: #00d084;
+  --brand-sky: #0693e3;
+  --brand-yellow: #fcb900;
+  --brand-red: #ea002c;
+
+  /* App tokens (light) — deepened where needed to hold WCAG AA on cream */
+  --background: var(--brand-cream);
+  --foreground: var(--brand-ink);
   --card: #ffffff;
-  --muted: #6b7280;
-  --border: #e5e7eb;
-  --accent: #0d9488;
-  --accent-soft: #ccfbf1;
-  --positive: #059669;
-  --negative: #dc2626;
+  --muted: #756259;
+  --border: #efdcd3;
+  --accent: #c0225f;
+  --accent-vivid: var(--brand-pink);
+  --accent-soft: #fde1ec;
+  --positive: #0a8f5b;
+  --negative: #c7102a;
 }
 
 @theme inline {
@@ -19,28 +40,72 @@
   --color-muted: var(--muted);
   --color-border: var(--border);
   --color-accent: var(--accent);
+  --color-accent-vivid: var(--accent-vivid);
   --color-accent-soft: var(--accent-soft);
   --color-positive: var(--positive);
   --color-negative: var(--negative);
+
+  /* Secondary/rotating accents, available as bg-accent-orange, text-accent-purple, etc. */
+  --color-accent-orange: var(--brand-orange);
+  --color-accent-purple: var(--brand-purple);
+  --color-accent-blue-violet: var(--brand-blue-violet);
+  --color-accent-mint: var(--brand-mint);
+  --color-accent-green: var(--brand-green);
+  --color-accent-sky: var(--brand-sky);
+  --color-accent-yellow: var(--brand-yellow);
+  --color-accent-red: var(--brand-red);
+
+  --font-sans: var(--font-body), -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-display: var(--font-display-face), "Space Mono", "IBM Plex Mono",
+    ui-monospace, "SFMono-Regular", Menlo, monospace;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #101216;
-    --foreground: #e8eaed;
-    --card: #1a1d23;
-    --muted: #9ca3af;
-    --border: #2b2f37;
-    --accent: #2dd4bf;
-    --accent-soft: #134e4a;
-    --positive: #34d399;
-    --negative: #f87171;
+    --background: #1b1412;
+    --foreground: #fbeee9;
+    --card: #241b18;
+    --muted: #c9b8b2;
+    --border: #3a2c27;
+    --accent: #ff8fbb;
+    --accent-vivid: #ff6fa8;
+    --accent-soft: #4a2030;
+    --positive: #4ade9a;
+    --negative: #ff7a7a;
   }
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, sans-serif;
+  font-family: var(--font-sans);
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+/* Soft gradient blob — pink -> orange -> purple, evokes the festival's
+   balloon/sphere key visuals. Decorative only; keep behind content and
+   never load-bearing for text contrast. */
+.brand-blob {
+  position: absolute;
+  pointer-events: none;
+  border-radius: 999px;
+  filter: blur(60px);
+  opacity: 0.55;
+  background: radial-gradient(
+    circle at 30% 30%,
+    var(--brand-pink) 0%,
+    var(--brand-orange) 45%,
+    var(--brand-purple) 100%
+  );
+  z-index: 0;
+}
+
+@media (prefers-color-scheme: dark) {
+  .brand-blob {
+    opacity: 0.35;
+  }
 }

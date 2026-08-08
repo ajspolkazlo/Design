@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { loginAs, createUserAndLogin } from "../actions";
+import BrandBlobs from "@/components/BrandBlobs";
 
 export const dynamic = "force-dynamic";
 
@@ -7,8 +8,11 @@ export default async function LoginPage() {
   const users = await prisma.user.findMany({ orderBy: { name: "asc" } });
 
   return (
-    <div className="mx-auto max-w-sm pt-8">
-      <h1 className="mb-1 text-2xl font-bold">Who are you?</h1>
+    <div className="relative mx-auto max-w-sm pt-8">
+      <BrandBlobs />
+      <h1 className="mb-1 font-display text-2xl font-bold lowercase">
+        who are you?
+      </h1>
       <p className="mb-6 text-sm text-muted">
         Pick your name to start tracking expenses.
       </p>
@@ -18,7 +22,7 @@ export default async function LoginPage() {
           <form key={user.id} action={loginAs.bind(null, user.id)}>
             <button
               type="submit"
-              className="flex w-full items-center gap-3 rounded-xl border border-border bg-card p-4 text-left font-medium shadow-sm transition hover:border-accent active:scale-[0.98]"
+              className="flex w-full items-center gap-3 rounded-2xl border border-border bg-card p-4 text-left font-medium shadow-sm transition-colors duration-200 hover:border-accent active:scale-[0.98]"
             >
               <span className="text-2xl">{user.emoji}</span>
               <span className="truncate">{user.name}</span>
@@ -49,7 +53,7 @@ export default async function LoginPage() {
         />
         <button
           type="submit"
-          className="rounded-xl bg-accent px-4 py-3 font-semibold text-white dark:text-black"
+          className="rounded-full bg-accent px-5 py-3 font-semibold text-white transition-colors duration-200 hover:bg-accent-orange dark:text-black"
         >
           Join
         </button>

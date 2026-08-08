@@ -1,4 +1,4 @@
-# 💸 SplitMate
+# 💸 Bittersplit
 
 A self-hosted, Splitwise-style expense splitter for a small group of friends.
 Track shared expenses in groups, see who owes who, simplify debts, and settle up.

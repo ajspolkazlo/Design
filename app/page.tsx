@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/lib/session";
 import { getOverallBalances } from "@/lib/balances";
 import { formatCents } from "@/lib/money";
+import BrandBlobs from "@/components/BrandBlobs";
 
 export const dynamic = "force-dynamic";
 
@@ -13,7 +14,8 @@ export default async function DashboardPage() {
   const { perGroup, totals } = await getOverallBalances(me.id);
 
   return (
-    <div>
+    <div className="relative">
+      <BrandBlobs />
       <div className="mb-6 rounded-2xl border border-border bg-card p-5 shadow-sm">
         <h1 className="text-sm font-semibold text-muted">Overall, across all groups</h1>
         {totals.length === 0 || totals.every((t) => t.netCents === 0) ? (
@@ -36,10 +38,10 @@ export default async function DashboardPage() {
       </div>
 
       <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-lg font-bold">Your groups</h2>
+        <h2 className="font-display text-lg font-bold">Your groups</h2>
         <Link
           href="/groups/new"
-          className="rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-white dark:text-black"
+          className="rounded-full bg-accent px-4 py-2 text-sm font-semibold text-white transition-colors duration-200 hover:bg-accent-orange dark:text-black"
         >
           + New group
         </Link>
@@ -50,7 +52,7 @@ export default async function DashboardPage() {
           <Link
             key={g.groupId}
             href={`/groups/${g.groupId}`}
-            className="flex items-center justify-between rounded-2xl border border-border bg-card p-4 shadow-sm transition hover:border-accent"
+            className="flex items-center justify-between rounded-2xl border border-border bg-card p-4 shadow-sm transition-colors duration-200 hover:border-accent"
           >
             <span className="font-semibold">{g.groupName}</span>
             {g.netCents === 0 ? (

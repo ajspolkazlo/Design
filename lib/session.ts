@@ -1,7 +1,7 @@
 import { cookies } from "next/headers";
 import { prisma } from "./prisma";
 
-const COOKIE_NAME = "splitmate_user";
+const COOKIE_NAME = "bittersplit_user";
 
 export async function getCurrentUser() {
   const store = await cookies();
