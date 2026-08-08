@@ -33,7 +33,7 @@ export default async function MembersPage({
         {group.members.map((m) => (
           <li
             key={m.id}
-            className="rounded-xl border border-border bg-card p-3 font-medium"
+            className="rounded-sm border border-border bg-card p-3 font-medium"
           >
             {m.user.emoji} {m.user.name}
           </li>
@@ -47,7 +47,7 @@ export default async function MembersPage({
             {nonMembers.map((user) => (
               <label
                 key={user.id}
-                className="flex items-center gap-3 rounded-xl border border-border bg-card p-3"
+                className="flex items-center gap-3 rounded-sm border border-border bg-card p-3"
               >
                 <input
                   type="checkbox"
@@ -63,7 +63,7 @@ export default async function MembersPage({
           </div>
           <button
             type="submit"
-            className="w-full glossy rounded-full bg-accent p-3 font-semibold text-white transition-colors duration-200 hover:bg-accent-orange dark:text-black"
+            className="w-full btn-flat bg-accent-vivid p-3.5 text-sm text-white"
           >
             Add to group
           </button>

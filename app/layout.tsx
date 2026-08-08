@@ -1,11 +1,12 @@
 import type { Metadata, Viewport } from "next";
 import Link from "next/link";
-import { Inter, Silkscreen } from "next/font/google";
+import { Outfit, Silkscreen } from "next/font/google";
 import "./globals.css";
 import { getCurrentUser } from "@/lib/session";
 import { logout } from "./actions";
+import BottomNav from "@/components/BottomNav";
 
-const inter = Inter({ subsets: ["latin"], variable: "--font-body" });
+const outfit = Outfit({ subsets: ["latin"], variable: "--font-body" });
 const silkscreen = Silkscreen({
   subsets: ["latin"],
   weight: ["400", "700"],
@@ -20,6 +21,7 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
+  themeColor: "#ff4c91",
 };
 
 export default async function RootLayout({
@@ -29,27 +31,27 @@ export default async function RootLayout({
   return (
     <html
       lang="en"
-      className={`h-full antialiased ${inter.variable} ${silkscreen.variable}`}
+      className={`h-full antialiased ${outfit.variable} ${silkscreen.variable}`}
     >
       <body className="min-h-full flex flex-col">
-        <header className="sticky top-0 z-10 border-b border-border bg-card/95 backdrop-blur">
+        {/* Solid hot-pink app bar. Text here is kept large/bold — white on
+            this pink clears AA for large text but not for small copy. */}
+        <header className="sticky top-0 z-20 bg-accent-vivid">
           <div className="mx-auto flex h-14 w-full max-w-2xl items-center justify-between px-4">
-            <Link href="/" className="flex items-center gap-2.5">
-              <span className="glossy flex size-8 shrink-0 items-center justify-center rounded-full font-display text-[10px] text-white">
-                bs
-              </span>
-              <span className="font-display text-base tracking-tight text-accent lowercase">
-                bittersplit
-              </span>
+            <Link
+              href="/"
+              className="font-display text-base lowercase tracking-tight text-white"
+            >
+              bittersplit
             </Link>
             {user && (
-              <form action={logout} className="flex items-center gap-3">
-                <span className="text-sm text-muted">
+              <form action={logout} className="flex items-center gap-2">
+                <span className="text-sm font-semibold text-white">
                   {user.emoji} {user.name}
                 </span>
                 <button
                   type="submit"
-                  className="rounded-lg border border-border px-2.5 py-1 text-xs text-muted hover:text-foreground"
+                  className="btn-flat border border-white/70 px-2.5 py-1 text-[11px] text-white"
                 >
                   Switch
                 </button>
@@ -57,9 +59,10 @@ export default async function RootLayout({
             )}
           </div>
         </header>
-        <main className="mx-auto w-full max-w-2xl flex-1 px-4 py-5 pb-24">
+        <main className="relative mx-auto w-full max-w-2xl flex-1 px-4 py-5 pb-28">
           {children}
         </main>
+        <BottomNav />
       </body>
     </html>
   );

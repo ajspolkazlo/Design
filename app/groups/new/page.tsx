@@ -27,7 +27,7 @@ export default async function NewGroupPage() {
             name="name"
             required
             placeholder="e.g. Sicily Trip"
-            className="w-full rounded-xl border border-border bg-card p-3"
+            className="w-full rounded-sm border border-border bg-card p-3"
           />
         </div>
 
@@ -39,7 +39,7 @@ export default async function NewGroupPage() {
             id="currency"
             name="currency"
             defaultValue="EUR"
-            className="w-full rounded-xl border border-border bg-card p-3"
+            className="w-full rounded-sm border border-border bg-card p-3"
           >
             {CURRENCIES.map((c) => (
               <option key={c} value={c}>
@@ -57,7 +57,7 @@ export default async function NewGroupPage() {
             {others.map((user) => (
               <label
                 key={user.id}
-                className="flex items-center gap-3 rounded-xl border border-border bg-card p-3"
+                className="flex items-center gap-3 rounded-sm border border-border bg-card p-3"
               >
                 <input
                   type="checkbox"
@@ -81,7 +81,7 @@ export default async function NewGroupPage() {
 
         <button
           type="submit"
-          className="w-full glossy rounded-full bg-accent p-3 font-semibold text-white transition-colors duration-200 hover:bg-accent-orange dark:text-black"
+          className="w-full btn-flat bg-accent-vivid p-3.5 text-sm text-white"
         >
           Create group
         </button>

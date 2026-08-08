@@ -88,7 +88,7 @@ export default function ExpenseForm({
     return null;
   }, [members, participantIds, splitType, amountCents, weights, currency]);
 
-  const inputCls = "w-full rounded-xl border border-border bg-card p-3";
+  const inputCls = "w-full rounded-sm border border-border bg-card p-3";
 
   return (
     <form action={formAction} className="space-y-5">
@@ -214,16 +214,16 @@ export default function ExpenseForm({
       <fieldset>
         <legend className="mb-2 text-sm font-semibold">Split</legend>
         <input type="hidden" name="splitType" value={splitType} />
-        <div className="mb-3 grid grid-cols-4 gap-1 rounded-xl border border-border bg-card p-1">
+        <div className="mb-3 flex gap-5 border-b border-border">
           {SPLIT_TABS.map((tab) => (
             <button
               key={tab.id}
               type="button"
               onClick={() => setSplitType(tab.id)}
-              className={`rounded-lg py-2 text-xs font-semibold transition ${
+              className={`-mb-px border-b-2 pb-2 text-xs font-semibold transition-colors ${
                 splitType === tab.id
-                  ? "bg-accent text-white dark:text-black"
-                  : "text-muted"
+                  ? "border-accent-vivid text-foreground"
+                  : "border-transparent text-muted hover:text-foreground"
               }`}
             >
               {tab.label}
@@ -237,7 +237,7 @@ export default function ExpenseForm({
             return (
               <div
                 key={m.id}
-                className={`flex items-center gap-3 rounded-xl border p-3 ${
+                className={`flex items-center gap-3 rounded-sm border p-3 ${
                   checked ? "border-border bg-card" : "border-transparent opacity-50"
                 }`}
               >
@@ -279,7 +279,7 @@ export default function ExpenseForm({
       </fieldset>
 
       {state.error && (
-        <p className="rounded-xl border border-negative/40 bg-negative/10 p-3 text-sm text-negative">
+        <p className="rounded-sm border border-negative/40 bg-negative/10 p-3 text-sm text-negative">
           {state.error}
         </p>
       )}
@@ -287,7 +287,7 @@ export default function ExpenseForm({
       <button
         type="submit"
         disabled={pending}
-        className="w-full glossy rounded-full bg-accent p-3 font-semibold text-white transition-colors duration-200 hover:bg-accent-orange disabled:opacity-60 dark:text-black"
+        className="w-full btn-flat bg-accent-vivid p-3.5 text-sm text-white disabled:opacity-60"
       >
         {pending ? "Saving…" : expenseId ? "Save changes" : "Add expense"}
       </button>

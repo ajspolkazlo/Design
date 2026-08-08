@@ -1,39 +1,41 @@
 /**
- * Decorative bubble cluster matching the festival's actual key visual:
- * glossy, translucent pearl spheres with a bright specular highlight and a
- * soft shadowed underside, not flat circles or a blurred gradient.
+ * Large pearl-bubble watermark. The real app parks big, soft, pale-pink
+ * pearls low behind the content of long screens rather than scattering
+ * small bright dots at the top — they read as a faint background texture,
+ * never competing with the text above them.
  */
-const BUBBLES = [
-  { size: 60, top: "-10%", left: "4%", color: "var(--color-accent-vivid)" },
-  { size: 34, top: "12%", left: "28%", color: "var(--color-accent-yellow)" },
-  { size: 46, top: "-6%", left: "58%", color: "var(--color-accent-sky)" },
-  { size: 26, top: "30%", left: "84%", color: "var(--color-accent-orange)" },
-  { size: 20, top: "58%", left: "14%", color: "var(--color-accent-mint)" },
-  { size: 16, top: "50%", left: "72%", color: "var(--color-accent-purple)" },
+const PEARLS = [
+  { size: 300, bottom: -110, left: -70, opacity: 0.5 },
+  { size: 380, bottom: -160, left: 120, opacity: 0.42 },
+  { size: 220, bottom: -80, right: -60, opacity: 0.45 },
 ];
 
-function bubbleStyle(color: string, size: number): React.CSSProperties {
+function pearl(size: number, opacity: number): React.CSSProperties {
   return {
     width: size,
     height: size,
-    background: `radial-gradient(circle at 32% 26%, rgba(255,255,255,0.95) 0%, rgba(255,255,255,0.35) 16%, ${color} 48%, color-mix(in srgb, ${color} 55%, black) 100%)`,
-    boxShadow: "inset -4px -8px 12px rgba(0,0,0,0.2), 0 3px 8px rgba(0,0,0,0.15)",
+    opacity,
+    background: `radial-gradient(circle at 36% 28%, #ffffff 0%, #fff0f5 18%, #ffd9e6 42%, #ffc2d6 66%, #ffb3cd 100%)`,
+    boxShadow: "inset -18px -26px 46px rgba(214,120,155,0.28)",
   };
 }
 
-/** Fixed-height bubble strip. Callers should reserve matching top clearance
- * (e.g. pt-28) so headline text sits below it rather than behind it. */
 export default function BrandBlobs() {
   return (
     <div
       aria-hidden
-      className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-24 overflow-hidden"
+      className="pearl-field pointer-events-none fixed inset-x-0 bottom-0 -z-10 h-80 overflow-hidden"
     >
-      {BUBBLES.map((b, i) => (
+      {PEARLS.map((p, i) => (
         <span
           key={i}
           className="absolute rounded-full"
-          style={{ top: b.top, left: b.left, ...bubbleStyle(b.color, b.size) }}
+          style={{
+            bottom: p.bottom,
+            left: p.left,
+            right: p.right,
+            ...pearl(p.size, p.opacity),
+          }}
         />
       ))}
     </div>

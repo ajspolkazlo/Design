@@ -1,15 +1,16 @@
 @import "tailwindcss";
 
 /*
- * Bittersplit brand tokens, matched to the actual BitterSweet Festival
- * identity: cream marketing surfaces, near-black text, hot pink as the
- * primary accent, secondary accents rotated for tags/charts — and a
- * glossy, pearl-bubble material language (not flat/sticker) for
- * decorative spheres and buttons, matching their real app's key visual.
+ * Bittersplit design tokens, matched to the real BitterSweet mobile app:
+ * a solid hot-pink app bar, warm cream content, near-black text, flat
+ * rectangular buttons, thin dividers instead of card chrome, a black
+ * bottom tab bar, and large pearl-bubble watermarks behind content.
+ * The pixel display face is reserved for the wordmark (their app uses a
+ * rounded geometric sans for all real UI text).
  */
 :root {
   /* Raw brand palette */
-  --brand-cream: #fbeee9;
+  --brand-cream: #fdf2ec;
   --brand-ink: #111010;
   --brand-pink: #ff4c91;
   --brand-orange: #ff6900;
@@ -21,17 +22,20 @@
   --brand-yellow: #fcb900;
   --brand-red: #ea002c;
 
-  /* App tokens (light) — deepened where needed to hold WCAG AA on cream */
   --background: var(--brand-cream);
   --foreground: var(--brand-ink);
-  --card: #ffffff;
-  --muted: #756259;
-  --border: #efdcd3;
+  /* Content sits directly on the cream ground; "card" is only used for the
+     few genuinely raised surfaces (inputs, the app bar backdrop). */
+  --card: #fffaf6;
+  --muted: #6f6058;
+  --border: #ebdbd1;
+  /* Pink deep enough for text/links on cream (AA); --brand-pink is for fills. */
   --accent: #c0225f;
   --accent-vivid: var(--brand-pink);
   --accent-soft: #fde1ec;
   --positive: #0a8f5b;
   --negative: #c7102a;
+  --tabbar: #0c0b0b;
 }
 
 @theme inline {
@@ -45,8 +49,8 @@
   --color-accent-soft: var(--accent-soft);
   --color-positive: var(--positive);
   --color-negative: var(--negative);
+  --color-tabbar: var(--tabbar);
 
-  /* Secondary/rotating accents, available as bg-accent-orange, text-accent-purple, etc. */
   --color-accent-orange: var(--brand-orange);
   --color-accent-purple: var(--brand-purple);
   --color-accent-blue-violet: var(--brand-blue-violet);
@@ -58,19 +62,18 @@
 
   --font-sans: var(--font-body), -apple-system, BlinkMacSystemFont, "Segoe UI",
     Roboto, "Helvetica Neue", Arial, sans-serif;
-  --font-display: var(--font-display-face), "Silkscreen", ui-monospace,
-    "SFMono-Regular", Menlo, monospace;
+  --font-display: var(--font-display-face), ui-monospace, "SFMono-Regular",
+    Menlo, monospace;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #1b1412;
-    --foreground: #fbeee9;
-    --card: #241b18;
-    --muted: #c9b8b2;
-    --border: #3a2c27;
+    --background: #17110f;
+    --foreground: #fdf2ec;
+    --card: #201815;
+    --muted: #c4b4ac;
+    --border: #342722;
     --accent: #ff8fbb;
-    --accent-vivid: #ff6fa8;
     --accent-soft: #4a2030;
     --positive: #4ade9a;
     --negative: #ff7a7a;
@@ -88,69 +91,37 @@ body {
 }
 
 /*
- * Glossy pearl/bubble material — the festival's real key visual is
- * translucent, glossy spheres with a bright specular highlight, not flat
- * shapes or hard sticker outlines. Applied to primary CTAs and decorative
- * bubbles alike so the whole UI reads as one consistent material.
+ * Flat brand button — the real app's CTAs are hard-edged solid rectangles
+ * (see its blue-violet "edit profile" button), not glossy pills.
  */
-.glossy {
-  position: relative;
-  overflow: hidden;
-  background: linear-gradient(
-    165deg,
-    color-mix(in srgb, var(--accent-vivid) 82%, white) 0%,
-    var(--accent) 100%
-  );
-  box-shadow:
-    0 6px 16px -4px color-mix(in srgb, var(--accent-vivid) 55%, transparent),
-    inset 0 1px 0 rgba(255, 255, 255, 0.5),
-    inset 0 -8px 12px -8px rgba(0, 0, 0, 0.3);
+.btn-flat {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 2px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   transition:
-    transform 150ms ease,
-    box-shadow 150ms ease,
-    filter 150ms ease;
+    background-color 160ms ease,
+    filter 160ms ease;
 }
-.glossy::before {
-  content: "";
-  position: absolute;
-  top: 8%;
-  left: 12%;
-  width: 34%;
-  height: 40%;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.55);
-  filter: blur(4px);
-  pointer-events: none;
+.btn-flat:hover {
+  filter: brightness(1.07);
 }
-.glossy:hover {
-  filter: brightness(1.05);
-  transform: translateY(-1px);
-}
-.glossy:active {
-  transform: translateY(1px) scale(0.99);
-  box-shadow:
-    0 2px 8px -2px color-mix(in srgb, var(--accent-vivid) 55%, transparent),
-    inset 0 1px 0 rgba(255, 255, 255, 0.4),
-    inset 0 -4px 8px -6px rgba(0, 0, 0, 0.3);
+.btn-flat:active {
+  filter: brightness(0.94);
 }
 
-/* Small glossy chip for category icons — same material, no button chrome. */
-.glossy-chip {
-  position: relative;
-  overflow: hidden;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.5),
-    inset 0 -6px 10px -6px rgba(0, 0, 0, 0.3);
-}
-.glossy-chip::before {
-  content: "";
-  position: absolute;
-  top: 10%;
-  left: 15%;
-  width: 30%;
-  height: 30%;
+/* Category dot — flat solid colour, matching the app's small colour marks. */
+.cat-dot {
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.55);
-  filter: blur(2px);
-  pointer-events: none;
+}
+
+/* The pearls are painted in light-mode pinks; on a dark ground they'd read
+   as grey blobs, so fade them back to a faint blush instead. */
+@media (prefers-color-scheme: dark) {
+  .pearl-field {
+    opacity: 0.16;
+  }
 }

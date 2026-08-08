@@ -7,6 +7,7 @@ import { formatCents, toGroupCents } from "@/lib/money";
 import { categoryIcon, categoryLabel } from "@/lib/categories";
 import { paletteColor } from "@/lib/palette";
 import DeleteButton from "@/components/DeleteButton";
+import BrandBlobs from "@/components/BrandBlobs";
 import { deletePayment } from "@/app/actions";
 
 export const dynamic = "force-dynamic";
@@ -48,23 +49,26 @@ export default async function GroupPage({
   };
 
   return (
-    <div>
+    <div className="relative min-h-[70vh]">
+      <BrandBlobs />
+
       <div className="mb-4 flex items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold">{group.name}</h1>
+          <h1 className="text-2xl font-semibold">{group.name}</h1>
           <p className="text-sm text-muted">
             {group.members.map((m) => m.user.name).join(", ")} · {group.currency}
           </p>
         </div>
         <Link
           href={`/groups/${id}/members`}
-          className="shrink-0 rounded-xl border border-border bg-card px-3 py-2 text-sm font-semibold"
+          className="btn-flat shrink-0 border border-border px-3 py-2 text-xs text-foreground"
         >
-          👥 Members
+          Members
         </Link>
       </div>
 
-      <div className="mb-4 grid grid-cols-2 gap-1 rounded-xl border border-border bg-card p-1">
+      {/* Underline tabs, as in the app — not a pill segmented control. */}
+      <div className="mb-2 flex gap-6 border-b border-border">
         {[
           { id: "activity", label: "Activity" },
           { id: "balances", label: "Balances" },
@@ -72,8 +76,10 @@ export default async function GroupPage({
           <Link
             key={t.id}
             href={`/groups/${id}?tab=${t.id}`}
-            className={`rounded-lg py-2 text-center text-sm font-semibold transition ${
-              tab === t.id ? "bg-accent text-white dark:text-black" : "text-muted"
+            className={`-mb-px border-b-2 pb-2.5 text-sm font-semibold transition-colors ${
+              tab === t.id
+                ? "border-accent-vivid text-foreground"
+                : "border-transparent text-muted hover:text-foreground"
             }`}
           >
             {t.label}
@@ -87,12 +93,16 @@ export default async function GroupPage({
         <ActivityTab group={group} name={name} />
       )}
 
-      <Link
-        href={`/groups/${id}/expenses/new`}
-        className="fixed bottom-6 left-1/2 -translate-x-1/2 glossy rounded-full bg-accent px-6 py-3.5 text-base font-bold text-white transition-colors duration-200 hover:bg-accent-orange dark:text-black"
-      >
-        + Add expense
-      </Link>
+      {/* Action bar docked above the tab bar, on a solid ground so scrolling
+          content passes behind it cleanly rather than peeking through. */}
+      <div className="fixed inset-x-0 bottom-16 z-10 border-t border-border bg-background px-4 py-3">
+        <Link
+          href={`/groups/${id}/expenses/new`}
+          className="btn-flat mx-auto w-full max-w-2xl bg-accent-vivid py-3.5 text-sm text-white"
+        >
+          + Add expense
+        </Link>
+      </div>
     </div>
   );
 }
@@ -134,62 +144,64 @@ function ActivityTab({
 
   if (items.length === 0) {
     return (
-      <p className="rounded-2xl border border-dashed border-border p-6 text-center text-sm text-muted">
+      <p className="py-12 text-center text-sm text-muted">
         Nothing here yet — add the first expense.
       </p>
     );
   }
 
   return (
-    <div className="space-y-2">
+    <ul className="pb-40">
       {items.map((item) =>
         item.kind === "expense" ? (
-          <Link
-            key={`e-${item.expense.id}`}
-            href={`/groups/${group.id}/expenses/${item.expense.id}/edit`}
-            className="flex items-center gap-3 rounded-2xl border border-border bg-card p-3.5 shadow-sm transition-colors duration-200 hover:border-accent"
+          <li key={`e-${item.expense.id}`} className="border-b border-border">
+            <Link
+              href={`/groups/${group.id}/expenses/${item.expense.id}/edit`}
+              className="flex items-center gap-3 py-4 transition-colors hover:text-accent"
+            >
+              <span
+                className="cat-dot mt-1 size-2.5 shrink-0 self-start"
+                style={{ background: paletteColor(item.expense.category) }}
+                title={categoryLabel(item.expense.category)}
+              />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-medium">
+                  {item.expense.description}
+                </span>
+                <span className="block text-xs text-muted first-letter:uppercase">
+                  {name(item.expense.payerId)} paid · split{" "}
+                  {item.expense.splitType.toLowerCase()} between{" "}
+                  {item.expense.splits.length}
+                </span>
+              </span>
+              <span className="text-right">
+                <span className="block font-semibold">
+                  {formatCents(item.expense.amountCents, item.expense.currency)}
+                </span>
+                <span className="block text-xs text-muted">
+                  {dateFmt.format(item.date)}
+                </span>
+              </span>
+            </Link>
+          </li>
+        ) : (
+          <li
+            key={`p-${item.payment.id}`}
+            className="flex items-center gap-3 border-b border-border py-4"
           >
             <span
-              className="glossy-chip flex size-10 shrink-0 items-center justify-center rounded-full text-lg"
-              style={{ background: paletteColor(item.expense.category) }}
-              title={categoryLabel(item.expense.category)}
-            >
-              {categoryIcon(item.expense.category)}
-            </span>
+              className="cat-dot mt-1 size-2.5 shrink-0 self-start bg-accent-green"
+              aria-hidden
+            />
             <span className="min-w-0 flex-1">
-              <span className="block truncate font-semibold">
-                {item.expense.description}
-              </span>
-              <span className="block text-xs text-muted first-letter:uppercase">
-                {name(item.expense.payerId)} paid · split{" "}
-                {item.expense.splitType.toLowerCase()} between{" "}
-                {item.expense.splits.length}
-              </span>
-            </span>
-            <span className="text-right">
-              <span className="block font-bold">
-                {formatCents(item.expense.amountCents, item.expense.currency)}
-              </span>
-              <span className="block text-xs text-muted">
-                {dateFmt.format(item.date)}
-              </span>
-            </span>
-          </Link>
-        ) : (
-          <div
-            key={`p-${item.payment.id}`}
-            className="flex items-center gap-3 rounded-2xl border border-border bg-card p-3.5 opacity-90"
-          >
-            <span className="text-2xl">🤝</span>
-            <span className="min-w-0 flex-1">
-              <span className="block font-semibold first-letter:uppercase">
+              <span className="block font-medium first-letter:uppercase">
                 {name(item.payment.fromId)} paid {name(item.payment.toId)}
               </span>
               <span className="block text-xs text-muted">
                 {item.payment.note ?? "settlement"} · {dateFmt.format(item.date)}
               </span>
             </span>
-            <span className="font-bold text-positive">
+            <span className="font-semibold text-positive">
               {formatCents(item.payment.amountCents, item.payment.currency)}
             </span>
             <DeleteButton
@@ -197,10 +209,10 @@ function ActivityTab({
               label="✕"
               confirmText="Remove this settlement? Balances will update."
             />
-          </div>
+          </li>
         )
       )}
-    </div>
+    </ul>
   );
 }
 
@@ -230,16 +242,16 @@ async function BalancesTab({
   const totalSpent = categories.reduce((acc, [, c]) => acc + c, 0);
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-7 pb-40">
       <section>
-        <h2 className="mb-2 text-sm font-bold text-muted">Net balances</h2>
-        <div className="space-y-2">
+        <h2 className="mb-1 text-sm font-semibold text-muted">Net balances</h2>
+        <ul>
           {rows.map(({ user, cents }) => (
-            <div
+            <li
               key={user.id}
-              className="flex items-center justify-between rounded-2xl border border-border bg-card p-3.5"
+              className="flex items-center justify-between border-b border-border py-3.5"
             >
-              <span className="font-semibold">
+              <span className="font-medium">
                 {user.emoji} {user.name}
                 {user.id === meId && <span className="text-muted"> (you)</span>}
               </span>
@@ -247,51 +259,49 @@ async function BalancesTab({
                 <span className="text-sm text-muted">settled</span>
               ) : (
                 <span
-                  className={`font-bold ${cents > 0 ? "text-positive" : "text-negative"}`}
+                  className={`font-semibold ${cents > 0 ? "text-positive" : "text-negative"}`}
                 >
                   {cents > 0 ? "gets back " : "owes "}
                   {formatCents(Math.abs(cents), group.currency)}
                 </span>
               )}
-            </div>
+            </li>
           ))}
-        </div>
+        </ul>
       </section>
 
       <section>
-        <h2 className="mb-2 text-sm font-bold text-muted">
+        <h2 className="mb-1 text-sm font-semibold text-muted">
           Suggested settlements ({transfers.length}{" "}
           {transfers.length === 1 ? "payment" : "payments"})
         </h2>
         {transfers.length === 0 ? (
-          <p className="rounded-2xl border border-dashed border-border p-5 text-center text-sm text-muted">
-            All settled up 🎉
-          </p>
+          <p className="py-8 text-center text-sm text-muted">All settled up 🎉</p>
         ) : (
-          <div className="space-y-2">
+          <ul>
             {transfers.map((t) => (
-              <div
+              <li
                 key={`${t.fromId}-${t.toId}`}
-                className="flex items-center justify-between gap-3 rounded-2xl border border-border bg-card p-3.5"
+                className="flex items-center justify-between gap-3 border-b border-border py-3.5"
               >
                 <span className="min-w-0 text-sm first-letter:uppercase">
-                  <strong>{name(t.fromId)}</strong> pays{" "}
-                  <strong>{name(t.toId)}</strong>{" "}
-                  <span className="font-bold">
+                  <strong className="font-semibold">{name(t.fromId)}</strong> pays{" "}
+                  <strong className="font-semibold">{name(t.toId)}</strong>{" "}
+                  <span className="font-semibold">
                     {formatCents(t.amountCents, group.currency)}
                   </span>
                 </span>
                 <Link
                   href={`/groups/${group.id}/settle?from=${t.fromId}&to=${t.toId}&amount=${(t.amountCents / 100).toFixed(2)}`}
-                  className="glossy shrink-0 rounded-full bg-accent px-3 py-2 text-xs font-bold text-white transition-colors duration-200 hover:bg-accent-orange dark:text-black"
+                  className="btn-flat shrink-0 bg-accent-blue-violet px-3 py-1.5 text-[11px] text-white"
                 >
                   Settle
                 </Link>
-              </div>
+              </li>
             ))}
-          </div>
+          </ul>
         )}
-        <div className="mt-2 text-right">
+        <div className="mt-3 text-right">
           <Link
             href={`/groups/${group.id}/settle`}
             className="text-sm font-semibold text-accent"
@@ -303,33 +313,31 @@ async function BalancesTab({
 
       {categories.length > 0 && (
         <section>
-          <h2 className="mb-2 text-sm font-bold text-muted">
+          <h2 className="mb-3 text-sm font-semibold text-muted">
             Spending by category · {formatCents(totalSpent, group.currency)} total
           </h2>
-          <div className="rounded-2xl border border-border bg-card p-4">
-            <div className="space-y-3">
-              {categories.map(([cat, cents]) => (
-                <div key={cat}>
-                  <div className="mb-1 flex items-baseline justify-between text-sm">
-                    <span>
-                      {categoryIcon(cat)} {categoryLabel(cat)}
-                    </span>
-                    <span className="font-semibold tabular-nums">
-                      {formatCents(cents, group.currency)}
-                    </span>
-                  </div>
-                  <div className="h-2 overflow-hidden rounded-full bg-background">
-                    <div
-                      className="h-full rounded-full"
-                      style={{
-                        width: `${Math.max(2, (cents / maxCategory) * 100)}%`,
-                        background: paletteColor(cat),
-                      }}
-                    />
-                  </div>
+          <div className="space-y-3">
+            {categories.map(([cat, cents]) => (
+              <div key={cat}>
+                <div className="mb-1 flex items-baseline justify-between text-sm">
+                  <span>
+                    {categoryIcon(cat)} {categoryLabel(cat)}
+                  </span>
+                  <span className="font-semibold tabular-nums">
+                    {formatCents(cents, group.currency)}
+                  </span>
                 </div>
-              ))}
-            </div>
+                <div className="h-1.5 overflow-hidden bg-border">
+                  <div
+                    className="h-full"
+                    style={{
+                      width: `${Math.max(2, (cents / maxCategory) * 100)}%`,
+                      background: paletteColor(cat),
+                    }}
+                  />
+                </div>
+              </div>
+            ))}
           </div>
         </section>
       )}

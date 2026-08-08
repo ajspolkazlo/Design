@@ -21,7 +21,7 @@ export default async function SettlePage({
   if (!group) notFound();
 
   const members = group.members.map((m) => m.user);
-  const inputCls = "w-full rounded-xl border border-border bg-card p-3";
+  const inputCls = "w-full rounded-sm border border-border bg-card p-3";
 
   return (
     <div className="mx-auto max-w-sm">
@@ -94,7 +94,7 @@ export default async function SettlePage({
 
         <button
           type="submit"
-          className="w-full glossy rounded-full bg-accent p-3 font-semibold text-white transition-colors duration-200 hover:bg-accent-orange dark:text-black"
+          className="w-full btn-flat bg-accent-vivid p-3.5 text-sm text-white"
         >
           Record payment
         </button>

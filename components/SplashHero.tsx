@@ -1,59 +1,75 @@
 /**
- * Splash-style hero panel modeled directly on BitterSweet's own app
- * screenshot: a hard-edged pink/purple color-block backdrop, oversized
- * glossy pearl bubbles bleeding off the edges, and a pixel-bitmap
- * wordmark — not a soft cream gradient.
+ * Splash panel modeled on the app's own launch screen: a hot-pink ground
+ * with a stepped, pixelated purple block pattern, pale pearl bubbles
+ * drifting over it, and the pixel-bitmap wordmark stacked in cream.
  */
-const BIG_BUBBLES = [
-  { size: 92, top: "-22%", right: "-6%", color: "rgba(255,255,255,0.9)" },
-  { size: 34, top: "34%", right: "10%", color: "rgba(255,255,255,0.75)" },
-  { size: 30, top: "10%", left: "6%", color: "rgba(255,255,255,0.6)" },
-  { size: 70, bottom: "-24%", left: "-8%", color: "rgba(255,255,255,0.85)" },
-  { size: 22, bottom: "8%", left: "34%", color: "rgba(255,255,255,0.6)" },
+const STEPS = [
+  { x: 0, y: 3 },
+  { x: 1, y: 3 },
+  { x: 1, y: 2 },
+  { x: 2, y: 2 },
+  { x: 3, y: 2 },
+  { x: 3, y: 1 },
+  { x: 4, y: 1 },
+  { x: 5, y: 1 },
+  { x: 5, y: 0 },
+  { x: 6, y: 0 },
+  { x: 7, y: 0 },
 ];
 
-function pearlStyle(size: number, color: string): React.CSSProperties {
-  return {
-    width: size,
-    height: size,
-    background: `radial-gradient(circle at 32% 26%, rgba(255,255,255,0.98) 0%, ${color} 22%, rgba(255,255,255,0.12) 60%, rgba(255,255,255,0.05) 100%)`,
-    boxShadow: "inset -6px -10px 16px rgba(0,0,0,0.15), 0 4px 10px rgba(0,0,0,0.18)",
-  };
-}
+const PEARLS = [
+  { size: 84, top: "-16%", right: "-4%" },
+  { size: 40, top: "44%", right: "14%" },
+  { size: 30, top: "12%", left: "8%" },
+  { size: 64, bottom: "-22%", left: "-6%" },
+];
+
+const CELL = 13; // % of panel width per pixel block
 
 export default function SplashHero() {
   return (
-    <div className="relative mb-6 h-40 overflow-hidden rounded-3xl bg-accent-vivid">
-      <div
-        aria-hidden
-        className="absolute -left-6 top-0 h-full w-2/3 -skew-x-12 bg-accent-purple opacity-90"
-      />
-      <div
-        aria-hidden
-        className="absolute -bottom-10 -right-10 h-2/3 w-1/2 rotate-12 bg-accent-blue-violet opacity-80"
-      />
-      {BIG_BUBBLES.map((b, i) => (
+    <div className="relative mb-6 h-44 overflow-hidden rounded-sm bg-accent-vivid">
+      {STEPS.map((s, i) => (
+        <span
+          key={i}
+          aria-hidden
+          className="absolute bg-accent-blue-violet"
+          style={{
+            left: `${s.x * CELL}%`,
+            top: `${s.y * 25}%`,
+            width: `${CELL + 0.5}%`,
+            height: "25.5%",
+          }}
+        />
+      ))}
+
+      {PEARLS.map((p, i) => (
         <span
           key={i}
           aria-hidden
           className="absolute rounded-full"
           style={{
-            top: b.top,
-            left: b.left,
-            right: b.right,
-            bottom: b.bottom,
-            ...pearlStyle(b.size, b.color),
+            width: p.size,
+            height: p.size,
+            top: p.top,
+            left: p.left,
+            right: p.right,
+            bottom: p.bottom,
+            background:
+              "radial-gradient(circle at 34% 27%, #ffffff 0%, #fff2f7 20%, rgba(255,214,229,0.75) 52%, rgba(255,190,214,0.45) 100%)",
+            boxShadow: "inset -8px -12px 22px rgba(180,90,125,0.25)",
           }}
         />
       ))}
-      <div className="relative flex h-full flex-col items-center justify-center gap-1 text-center">
-        <p className="font-display text-3xl leading-tight text-white">
+
+      <div className="relative flex h-full flex-col items-center justify-center">
+        <p className="font-display text-2xl leading-[1.15] text-[#fdf2ec]">
           bitter
           <br />
           split
         </p>
-        <p className="font-display text-[10px] tracking-[0.3em] text-white/80">
-          EXPENSE SPLITTER
+        <p className="mt-2 font-display text-[9px] tracking-[0.35em] text-[#fdf2ec]/85">
+          EXPENSES
         </p>
       </div>
     </div>
